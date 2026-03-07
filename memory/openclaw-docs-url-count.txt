@@ -1,0 +1,36 @@
+sitemap: https://docs.openclaw.ai/sitemap.xml
+total_urls: 640
+zh_cn_urls: 303
+en_urls: 0
+
+sample_zh_cn_urls:
+https://docs.openclaw.ai/zh-CN/AGENTS
+https://docs.openclaw.ai/zh-CN/automation/auth-monitoring
+https://docs.openclaw.ai/zh-CN/automation/cron-jobs
+https://docs.openclaw.ai/zh-CN/automation/cron-vs-heartbeat
+https://docs.openclaw.ai/zh-CN/automation/gmail-pubsub
+https://docs.openclaw.ai/zh-CN/automation/hooks
+https://docs.openclaw.ai/zh-CN/automation/poll
+https://docs.openclaw.ai/zh-CN/automation/troubleshooting
+https://docs.openclaw.ai/zh-CN/automation/webhook
+https://docs.openclaw.ai/zh-CN/brave-search
+https://docs.openclaw.ai/zh-CN/channels/bluebubbles
+https://docs.openclaw.ai/zh-CN/channels/broadcast-groups
+https://docs.openclaw.ai/zh-CN/channels/channel-routing
+https://docs.openclaw.ai/zh-CN/channels/discord
+https://docs.openclaw.ai/zh-CN/channels/feishu
+https://docs.openclaw.ai/zh-CN/channels/googlechat
+https://docs.openclaw.ai/zh-CN/channels/grammy
+https://docs.openclaw.ai/zh-CN/channels/group-messages
+https://docs.openclaw.ai/zh-CN/channels/groups
+https://docs.openclaw.ai/zh-CN/channels/imessage
+https://docs.openclaw.ai/zh-CN/channels
+https://docs.openclaw.ai/zh-CN/channels/line
+https://docs.openclaw.ai/zh-CN/channels/location
+https://docs.openclaw.ai/zh-CN/channels/matrix
+https://docs.openclaw.ai/zh-CN/channels/mattermost
+https://docs.openclaw.ai/zh-CN/channels/msteams
+https://docs.openclaw.ai/zh-CN/channels/nextcloud-talk
+https://docs.openclaw.ai/zh-CN/channels/nostr
+https://docs.openclaw.ai/zh-CN/channels/pairing
+https://docs.openclaw.ai/zh-CN/channels/signal
