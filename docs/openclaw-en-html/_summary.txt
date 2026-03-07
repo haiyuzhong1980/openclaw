@@ -1,0 +1,4 @@
+total=337
+ok=337
+fail=0
+seconds=61.2
