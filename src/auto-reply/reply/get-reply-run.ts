@@ -338,24 +338,36 @@ export async function runPreparedReply(
   const isMainSession = !isGroupSession && sessionKey === normalizeMainKey(sessionCfg?.mainKey);
 
   // Intent-based routing logic
-  if (intentResult && shouldRouteToTrackedExecution(intentResult)) {
-    // For execution intent, check if we should go to tracked orchestrator
-    const routedResult = await routeToTrackedExecution({
-      ctx,
-      intentResult,
-      cfg,
-      agentId,
-      workspaceDir,
-    });
+  if (intentResult) {
+    console.log("intentResult:", intentResult);
 
-    if (routedResult.status === "routed") {
-      // Execution intent has been routed to tracked orchestrator
-      typing.cleanup();
-      return undefined; // Return undefined to signal that we've handled the message
+    if (shouldRouteToTrackedExecution(intentResult)) {
+      // For execution intent, check if we should go to tracked orchestrator
+      console.log("Execution intent detected, should route to tracked orchestrator");
+
+      const routedResult = await routeToTrackedExecution({
+        ctx,
+        intentResult,
+        cfg,
+        agentId,
+        workspaceDir,
+      });
+
+      console.log("routedResult:", routedResult);
+
+      if (routedResult.status === "routed") {
+        // Execution intent has been routed to tracked orchestrator
+        typing.cleanup();
+        return undefined; // Return undefined to signal that we've handled the message
+      } else {
+        // Fallback to normal flow
+        console.log(`Tracked execution routing failed: ${routedResult.reason}`);
+      }
     } else {
-      // Fallback to normal flow
-      console.log(`Tracked execution routing failed: ${routedResult.reason}`);
+      console.log("Not routing to tracked execution - shouldRoute returned false");
     }
+  } else {
+    console.log("intentResult is undefined");
   }
   // Extract first-token think hint from the user body BEFORE prepending system events.
   // If done after, the System: prefix becomes parts[0] and silently shadows any
