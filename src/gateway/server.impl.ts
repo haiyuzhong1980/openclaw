@@ -115,6 +115,7 @@ import {
   mergeGatewayTailscaleConfig,
 } from "./startup-auth.js";
 import { maybeSeedControlUiAllowedOriginsAtStartup } from "./startup-control-ui-origins.js";
+import type { TaskTerminalNotifierHandle } from "./task-terminal-notifier.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -485,6 +486,7 @@ export async function startGatewayServer(
   const channelMethods = listChannelPlugins().flatMap((plugin) => plugin.gatewayMethods ?? []);
   const gatewayMethods = Array.from(new Set([...baseGatewayMethods, ...channelMethods]));
   let pluginServices: PluginServicesHandle | null = null;
+  let taskTerminalNotifier: TaskTerminalNotifierHandle | null = null;
   const runtimeConfig = await resolveGatewayRuntimeConfig({
     cfg: cfgAtStart,
     port,
@@ -923,7 +925,7 @@ export async function startGatewayServer(
 
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
   if (!minimalTestGateway) {
-    ({ browserControl, pluginServices } = await startGatewaySidecars({
+    ({ browserControl, pluginServices, taskTerminalNotifier } = await startGatewaySidecars({
       cfg: cfgAtStart,
       pluginRegistry,
       defaultWorkspaceDir,
@@ -1019,6 +1021,7 @@ export async function startGatewayServer(
     canvasHostServer,
     stopChannel,
     pluginServices,
+    taskTerminalNotifier,
     cron,
     heartbeatRunner,
     updateCheckStop: stopGatewayUpdateCheck,

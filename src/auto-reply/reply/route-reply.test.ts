@@ -399,6 +399,19 @@ describe("routeReply", () => {
     );
   });
 
+  it("treats zero outbound deliveries as a failure", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    const res = await routeReply({
+      payload: { text: "hi" },
+      channel: "telegram",
+      to: "telegram:123",
+      sessionKey: "agent:main:telegram:default:direct:123",
+      cfg: {} as never,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("no outbound messages were delivered");
+  });
+
   it("skips mirror data when mirror is false", async () => {
     mocks.deliverOutboundPayloads.mockResolvedValue([]);
     await routeReply({

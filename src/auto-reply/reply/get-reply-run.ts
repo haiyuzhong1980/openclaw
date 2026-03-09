@@ -46,7 +46,12 @@ import { resolveQueueSettings } from "./queue.js";
 import { routeReply } from "./route-reply.js";
 import { buildBareSessionResetPrompt } from "./session-reset-prompt.js";
 import { drainFormattedSystemEvents, ensureSkillSnapshot } from "./session-updates.js";
-import { shouldRouteToTrackedExecution, routeToTrackedExecution } from "./tracked-execution.js";
+import {
+  formatTrackedExecutionFallback,
+  shouldIgnoreTrackedExecutionFailure,
+  shouldRouteToTrackedExecution,
+  routeToTrackedExecution,
+} from "./tracked-execution.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
@@ -344,12 +349,14 @@ export async function runPreparedReply(
     if (shouldRouteToTrackedExecution(intentResult)) {
       // For execution intent, check if we should go to tracked orchestrator
       console.log("Execution intent detected, should route to tracked orchestrator");
+      await typing.startTypingLoop();
 
       const routedResult = await routeToTrackedExecution({
         ctx,
         intentResult,
         cfg,
         agentId,
+        agentSessionKey: sessionKey,
         workspaceDir,
       });
 
@@ -357,11 +364,24 @@ export async function runPreparedReply(
 
       if (routedResult.status === "routed") {
         // Execution intent has been routed to tracked orchestrator
-        typing.cleanup();
-        return undefined; // Return undefined to signal that we've handled the message
+        typing.markRunComplete();
+        if (routedResult.replyText?.trim()) {
+          return { text: routedResult.replyText.trim() };
+        }
+        if (routedResult.note?.trim()) {
+          return { text: routedResult.note.trim() };
+        }
+        return undefined;
       } else {
-        // Fallback to normal flow
         console.log(`Tracked execution routing failed: ${routedResult.reason}`);
+        if (shouldIgnoreTrackedExecutionFailure(routedResult.reason, cfg)) {
+          console.log("Tracked execution backend unavailable; continuing with normal agent flow");
+        } else {
+          typing.markRunComplete();
+          return {
+            text: formatTrackedExecutionFallback(routedResult.reason),
+          };
+        }
       }
     } else {
       console.log("Not routing to tracked execution - shouldRoute returned false");

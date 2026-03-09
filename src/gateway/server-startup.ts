@@ -28,6 +28,7 @@ import {
   shouldWakeFromRestartSentinel,
 } from "./server-restart-sentinel.js";
 import { startGatewayMemoryBackend } from "./server-startup-memory.js";
+import { startTaskTerminalNotifier } from "./task-terminal-notifier.js";
 
 const SESSION_LOCK_STALE_MS = 30 * 60 * 1000;
 
@@ -181,11 +182,13 @@ export async function startGatewaySidecars(params: {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);
   });
 
+  const taskTerminalNotifier = startTaskTerminalNotifier(params.cfg);
+
   if (shouldWakeFromRestartSentinel()) {
     setTimeout(() => {
       void scheduleRestartSentinelWake({ deps: params.deps });
     }, 750);
   }
 
-  return { browserControl, pluginServices };
+  return { browserControl, pluginServices, taskTerminalNotifier };
 }

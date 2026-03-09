@@ -164,6 +164,13 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
           : undefined,
     });
 
+    if (results.length === 0) {
+      return {
+        ok: false,
+        error: `Failed to route reply to ${channel}: no outbound messages were delivered`,
+      };
+    }
+
     const last = results.at(-1);
     return { ok: true, messageId: last?.messageId };
   } catch (err) {
