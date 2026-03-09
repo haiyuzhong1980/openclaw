@@ -16,6 +16,21 @@ This set of scripts packages the OPC Sentinel responsibilities into a reusable t
    The installer writes a LaunchAgent that runs `opc_sentinel.py` every minute with `--heartbeat-seconds 90`, `--stuck-seconds 300`, `--max-backups 20`, and `--max-task-retries 1` by default.
 3. If you need a system-level daemon, the companion installer is `skills/task-orchestrator/scripts/install_opc_sentinel_daemon.py`, but the user-level LaunchAgent is sufficient for most setups.
 
+## Quick start check
+- After install, confirm launchd picked up the new agent:
+  ```bash
+  launchctl print gui/$(id -u)/ai.openclaw.opc-sentinel | head -n 20
+  ```
+- Watch one run manually:
+  ```bash
+  python3 skills/task-orchestrator/scripts/opc_sentinel.py --heartbeat-seconds 90 --stuck-seconds 300 --max-task-retries 1
+  ```
+- Generate a long-running test task (example):
+  ```bash
+  python3 skills/task-orchestrator/scripts/start_tracked_task.py --command "sleep 180" --title "opc-long-run-demo"
+  ```
+  You should see `heartbeat_sent` events and a pending follow-up under `~/.openclaw/sentinel/task-followups/`.
+
 ## Runtime behavior
 - `opc_sentinel.py` monitors each tracked task's `status.json`, writes structured `events.jsonl` entries, and queues follow-ups under `~/.openclaw/sentinel/task-followups/`.
 - Sentinel only updates task status when it sees true heartbeat or blocked signals, and `skills/task-orchestrator/scripts/run_tracked_command.py` now merges on-disk state before writing so heartbeat timestamps survive.
@@ -31,6 +46,10 @@ This set of scripts packages the OPC Sentinel responsibilities into a reusable t
 - `skills/task-orchestrator/scripts/run_tracked_command.py` — the runner merges the latest `status.json` from disk before writing, so sentinel-written fields persist.
 - `skills/task-orchestrator/scripts/install_opc_sentinel_launchd.py` / `install_opc_sentinel_daemon.py` — produce the LaunchAgent/LaunchDaemon plists without gateway recovery flags.
 - `skills/task-orchestrator/scripts/opc_sentinel.py` — main loop that emits heartbeat/follow-up events and exposes flags such as `--allow-retry`, `--skip-backup`, `--kill-stuck-pids`, and `--skip-gateway` to tune follow-up behavior.
+
+## Uninstall
+- User LaunchAgent: `python3 skills/task-orchestrator/scripts/uninstall_opc_sentinel_launchd.py`
+- System Daemon: `sudo python3 skills/task-orchestrator/scripts/uninstall_opc_sentinel_daemon.py`
 
 ## Next steps
 1. Ship `public/opc-sentinel-plugin` branch as a plugin release for others to install.
