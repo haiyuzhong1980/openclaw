@@ -30,6 +30,8 @@ const queueMocks = vi.hoisted(() => ({
   enqueueDelivery: vi.fn(async () => "mock-queue-id"),
   ackDelivery: vi.fn(async () => {}),
   failDelivery: vi.fn(async () => {}),
+  hasPendingUserVisibleDeliveries: vi.fn(async () => false),
+  updateDeliveryPayloads: vi.fn(async () => {}),
 }));
 const logMocks = vi.hoisted(() => ({
   warn: vi.fn(),
@@ -55,6 +57,8 @@ vi.mock("./delivery-queue.js", () => ({
   enqueueDelivery: queueMocks.enqueueDelivery,
   ackDelivery: queueMocks.ackDelivery,
   failDelivery: queueMocks.failDelivery,
+  hasPendingUserVisibleDeliveries: queueMocks.hasPendingUserVisibleDeliveries,
+  updateDeliveryPayloads: queueMocks.updateDeliveryPayloads,
 }));
 vi.mock("../../logging/subsystem.js", () => ({
   createSubsystemLogger: () => {
@@ -202,6 +206,10 @@ describe("deliverOutboundPayloads", () => {
     queueMocks.ackDelivery.mockResolvedValue(undefined);
     queueMocks.failDelivery.mockClear();
     queueMocks.failDelivery.mockResolvedValue(undefined);
+    queueMocks.hasPendingUserVisibleDeliveries.mockClear();
+    queueMocks.hasPendingUserVisibleDeliveries.mockResolvedValue(false);
+    queueMocks.updateDeliveryPayloads.mockClear();
+    queueMocks.updateDeliveryPayloads.mockResolvedValue(undefined);
     logMocks.warn.mockClear();
   });
 
@@ -728,7 +736,7 @@ describe("deliverOutboundPayloads", () => {
     );
   });
 
-  it("calls failDelivery instead of ackDelivery on bestEffort partial failure", async () => {
+  it("shrinks queued payloads before failDelivery on bestEffort partial failure", async () => {
     const { onError } = await runBestEffortPartialFailureDelivery();
 
     // onError was called for the first payload's failure.
@@ -736,6 +744,10 @@ describe("deliverOutboundPayloads", () => {
 
     // Queue entry should NOT be acked — failDelivery should be called instead.
     expect(queueMocks.ackDelivery).not.toHaveBeenCalled();
+    expect(queueMocks.updateDeliveryPayloads).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expect.arrayContaining([expect.objectContaining({ text: "a" })]),
+    );
     expect(queueMocks.failDelivery).toHaveBeenCalledWith(
       "mock-queue-id",
       "partial delivery failure (bestEffort)",
@@ -762,6 +774,29 @@ describe("deliverOutboundPayloads", () => {
     expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
     expect(sendWhatsApp).not.toHaveBeenCalled();
+  });
+
+  it("defers silent internal followups when user-visible queue entries are pending", async () => {
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
+    queueMocks.hasPendingUserVisibleDeliveries.mockResolvedValue(true);
+
+    const results = await deliverOutboundPayloads({
+      cfg: {},
+      channel: "whatsapp",
+      to: "+1555",
+      payloads: [{ text: "internal followup" }],
+      deps: { sendWhatsApp },
+      silent: true,
+    });
+
+    expect(results).toEqual([]);
+    expect(queueMocks.enqueueDelivery).toHaveBeenCalledTimes(1);
+    expect(queueMocks.hasPendingUserVisibleDeliveries).toHaveBeenCalledWith({
+      excludeId: "mock-queue-id",
+    });
+    expect(sendWhatsApp).not.toHaveBeenCalled();
+    expect(queueMocks.ackDelivery).not.toHaveBeenCalled();
+    expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
   it("passes normalized payload to onError", async () => {

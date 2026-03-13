@@ -36,7 +36,13 @@ import type { sendMessageSlack } from "../../slack/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
 import type { sendMessageWhatsApp } from "../../web/outbound.js";
 import { throwIfAborted } from "./abort.js";
-import { ackDelivery, enqueueDelivery, failDelivery } from "./delivery-queue.js";
+import {
+  ackDelivery,
+  enqueueDelivery,
+  failDelivery,
+  hasPendingUserVisibleDeliveries,
+  updateDeliveryPayloads,
+} from "./delivery-queue.js";
 import type { OutboundIdentity } from "./identity.js";
 import type { NormalizedOutboundPayload } from "./payloads.js";
 import { normalizeReplyPayloadsForDelivery } from "./payloads.js";
@@ -233,7 +239,11 @@ type DeliverOutboundPayloadsCoreParams = {
   gifPlayback?: boolean;
   abortSignal?: AbortSignal;
   bestEffort?: boolean;
-  onError?: (err: unknown, payload: NormalizedOutboundPayload) => void;
+  onError?: (
+    err: unknown,
+    payload: NormalizedOutboundPayload,
+    meta?: { remainingPayloads: ReplyPayload[] },
+  ) => void;
   onPayload?: (payload: NormalizedOutboundPayload) => void;
   /** Session/agent context used for hooks and media local-root scoping. */
   session?: OutboundSessionContext;
@@ -248,6 +258,7 @@ type DeliverOutboundPayloadsCoreParams = {
     groupId?: string;
   };
   silent?: boolean;
+  captureRetryPayloads?: (payloads: ReplyPayload[]) => void;
 };
 
 type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & {
@@ -482,11 +493,21 @@ export async function deliverOutboundPayloads(
         mirror: params.mirror,
       }).catch(() => null); // Best-effort — don't block delivery if queue write fails.
 
+  if (!params.skipQueue && queueId && params.silent) {
+    const shouldDeferForLaneWatch = await hasPendingUserVisibleDeliveries({
+      excludeId: queueId,
+    }).catch(() => false);
+    if (shouldDeferForLaneWatch) {
+      return [];
+    }
+  }
+
   // Wrap onError to detect partial failures under bestEffort mode.
   // When bestEffort is true, per-payload errors are caught and passed to onError
   // without throwing — so the outer try/catch never fires. We track whether any
   // payload failed so we can call failDelivery instead of ackDelivery.
   let hadPartialFailure = false;
+  let remainingPayloadsForRetry: ReplyPayload[] | null = null;
   const wrappedParams = params.onError
     ? {
         ...params,
@@ -494,13 +515,28 @@ export async function deliverOutboundPayloads(
           hadPartialFailure = true;
           params.onError!(err, payload);
         },
+        captureRetryPayloads: (payloadsForRetry: ReplyPayload[]) => {
+          remainingPayloadsForRetry = payloadsForRetry;
+        },
       }
-    : params;
+    : {
+        ...params,
+        onError: (_err: unknown, _payload: NormalizedOutboundPayload) => {
+          hadPartialFailure = true;
+        },
+        captureRetryPayloads: (payloadsForRetry: ReplyPayload[]) => {
+          remainingPayloadsForRetry = payloadsForRetry;
+        },
+      };
 
   try {
     const results = await deliverOutboundPayloadsCore(wrappedParams);
     if (queueId) {
       if (hadPartialFailure) {
+        const retryPayloads = remainingPayloadsForRetry as ReplyPayload[] | null;
+        if (retryPayloads && retryPayloads.length > 0) {
+          await updateDeliveryPayloads(queueId, retryPayloads).catch(() => {});
+        }
         await failDelivery(queueId, "partial delivery failure (bestEffort)").catch(() => {});
       } else {
         await ackDelivery(queueId).catch(() => {}); // Best-effort cleanup.
@@ -663,6 +699,8 @@ async function deliverOutboundPayloadsCore(
     };
   };
   const normalizedPayloads = normalizePayloadsForChannelDelivery(payloads, channel);
+  const failedPayloadIndexes = new Set<number>();
+  const deliveredPayloadIndexes = new Set<number>();
   const hookRunner = getGlobalHookRunner();
   const sessionKeyForInternalHooks = params.mirror?.sessionKey ?? params.session?.key;
   const mirrorIsGroup = params.mirror?.isGroup;
@@ -687,7 +725,7 @@ async function deliverOutboundPayloadsCore(
       },
     );
   }
-  for (const payload of normalizedPayloads) {
+  for (const [payloadIndex, payload] of normalizedPayloads.entries()) {
     let payloadSummary = buildPayloadSummary(payload);
     try {
       throwIfAborted(abortSignal);
@@ -716,6 +754,7 @@ async function deliverOutboundPayloadsCore(
       if (handler.sendPayload && effectivePayload.channelData) {
         const delivery = await handler.sendPayload(effectivePayload, sendOverrides);
         results.push(delivery);
+        deliveredPayloadIndexes.add(payloadIndex);
         emitMessageSent({
           success: true,
           content: payloadSummary.text,
@@ -731,6 +770,9 @@ async function deliverOutboundPayloadsCore(
           await sendTextChunks(payloadSummary.text, sendOverrides);
         }
         const messageId = results.at(-1)?.messageId;
+        if (results.length > beforeCount) {
+          deliveredPayloadIndexes.add(payloadIndex);
+        }
         emitMessageSent({
           success: results.length > beforeCount,
           content: payloadSummary.text,
@@ -757,6 +799,9 @@ async function deliverOutboundPayloadsCore(
         const beforeCount = results.length;
         await sendTextChunks(fallbackText, sendOverrides);
         const messageId = results.at(-1)?.messageId;
+        if (results.length > beforeCount) {
+          deliveredPayloadIndexes.add(payloadIndex);
+        }
         emitMessageSent({
           success: results.length > beforeCount,
           content: payloadSummary.text,
@@ -786,7 +831,9 @@ async function deliverOutboundPayloadsCore(
         content: payloadSummary.text,
         messageId: lastMessageId,
       });
+      deliveredPayloadIndexes.add(payloadIndex);
     } catch (err) {
+      failedPayloadIndexes.add(payloadIndex);
       emitMessageSent({
         success: false,
         content: payloadSummary.text,
@@ -797,6 +844,14 @@ async function deliverOutboundPayloadsCore(
       }
       params.onError?.(err, payloadSummary);
     }
+  }
+  if (failedPayloadIndexes.size > 0) {
+    params.captureRetryPayloads?.(
+      normalizedPayloads.filter(
+        (_candidate, index) =>
+          failedPayloadIndexes.has(index) || !deliveredPayloadIndexes.has(index),
+      ),
+    );
   }
   if (params.mirror && results.length > 0) {
     const mirrorText = resolveMirroredTranscriptText({
