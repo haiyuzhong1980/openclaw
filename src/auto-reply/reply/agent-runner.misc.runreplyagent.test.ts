@@ -77,6 +77,7 @@ vi.mock("../../cron/store.js", async () => {
 });
 
 import { runReplyAgent } from "./agent-runner.js";
+import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 
 type RunWithModelFallbackParams = {
   provider: string;
@@ -1933,5 +1934,208 @@ describe("runReplyAgent billing error classification", () => {
     const payload = Array.isArray(result) ? result[0] : result;
     expect(payload?.text).toContain("billing error");
     expect(payload?.text).not.toContain("Context overflow");
+  });
+});
+
+describe("runReplyAgent argus resume supervisor", () => {
+  it("arms argus recovery and schedules an automatic retry after rate limits", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "1");
+    const scheduledCallbacks: Array<() => void> = [];
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+    ) => {
+      if (typeof handler === "function") {
+        scheduledCallbacks.push(handler);
+      }
+      return 0 as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-argus-resume-"));
+    const storePath = path.join(stateDir, "sessions.json");
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { main: sessionEntry };
+    await saveSessionStore(storePath, sessionStore);
+
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(
+      new Error("All models failed (2): 429 rate limit"),
+    );
+
+    const typing = createMockTypingController();
+    const sessionCtx = {
+      Provider: "telegram",
+      MessageSid: "msg",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "interrupt" } as unknown as QueueSettings;
+    const followupRun = {
+      prompt: "hello",
+      summaryLine: "hello",
+      enqueuedAt: Date.now(),
+      run: {
+        agentId: "main",
+        agentDir: "/tmp/agent",
+        sessionId: "session",
+        sessionKey: "main",
+        messageProvider: "telegram",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {},
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "message_end",
+      },
+    } as unknown as FollowupRun;
+ 
+    const runPromise = runReplyAgent({
+      commandBody: "hello",
+      followupRun,
+      queueKey: "main",
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: false,
+      isActive: false,
+      isStreaming: false,
+      typing,
+      sessionCtx,
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+
+    const result = await runPromise;
+    expect(result).toMatchObject({
+      text: expect.stringContaining("retry automatically"),
+    });
+    expect(sessionStore.main.argus).toMatchObject({
+      mainlineState: "protected",
+      recoveryState: "active",
+      recoveryReason: "rate_limit",
+      recoveryAttemptCount: 1,
+    });
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 25);
+
+    for (const callback of scheduledCallbacks) {
+      callback();
+    }
+    expect(enqueueFollowupRun).toHaveBeenCalledWith(
+      "main",
+      expect.objectContaining({
+        prompt: expect.stringContaining("Continue where you left off"),
+        summaryLine: "Argus resume after rate_limit",
+      }),
+      resolvedQueue,
+      "none",
+    );
+    expect(scheduleFollowupDrain).toHaveBeenCalledWith("main", expect.any(Function));
+    timeoutSpy.mockRestore();
+  });
+
+  it("marks argus recovery verified after a successful resumed run", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-argus-clear-"));
+    const storePath = path.join(stateDir, "sessions.json");
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      argus: {
+        mainlineState: "protected",
+        protectUntil: Date.now() + 60_000,
+        recoveryState: "active",
+        recoveryUpdatedAt: Date.now(),
+        recoveryReason: "rate_limit",
+        recoveryResumeAt: Date.now() + 10_000,
+        recoveryAttemptCount: 1,
+      },
+    };
+    const sessionStore = { main: sessionEntry };
+    await saveSessionStore(storePath, sessionStore);
+
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Recovered response" }],
+      meta: {},
+    });
+
+    const typing = createMockTypingController();
+    const sessionCtx = {
+      Provider: "telegram",
+      MessageSid: "msg",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "interrupt" } as unknown as QueueSettings;
+    const followupRun = {
+      prompt: "resume",
+      summaryLine: "resume",
+      enqueuedAt: Date.now(),
+      run: {
+        sessionId: "session",
+        sessionKey: "main",
+        messageProvider: "telegram",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {},
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "message_end",
+      },
+    } as unknown as FollowupRun;
+
+    const result = await runReplyAgent({
+      commandBody: "resume",
+      followupRun,
+      queueKey: "main",
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: false,
+      isActive: false,
+      isStreaming: false,
+      typing,
+      sessionCtx,
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+
+    expect(result).toMatchObject({ text: "Recovered response" });
+    expect(sessionStore.main.argus).toMatchObject({
+      recoveryState: "verified",
+    });
+    expect(sessionStore.main.argus?.recoveryReason).toBeUndefined();
+    expect(sessionStore.main.argus?.recoveryResumeAt).toBeUndefined();
+    expect(sessionStore.main.argus?.recoveryAttemptCount).toBeUndefined();
   });
 });

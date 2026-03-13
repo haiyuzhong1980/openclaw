@@ -68,6 +68,14 @@ export type SessionArgusMeta = {
   recoveryState?: SessionArgusRecoveryState;
   recoveryUpdatedAt?: number;
   recoveryReason?: string;
+  /**
+   * Next scheduled resume time for Argus-managed recovery, epoch ms.
+   */
+  recoveryResumeAt?: number;
+  /**
+   * Number of auto-resume attempts already scheduled for this recovery cycle.
+   */
+  recoveryAttemptCount?: number;
 };
 
 export type AcpSessionRuntimeOptions = {

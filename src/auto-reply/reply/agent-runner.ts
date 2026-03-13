@@ -6,6 +6,8 @@ import { isCliProvider } from "../../agents/model-selection.js";
 import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
+  loadSessionStore,
+  isArgusRecoverySession,
   resolveAgentIdFromSessionKey,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -59,6 +61,15 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const MAX_ARGUS_RESUME_ATTEMPTS = 2;
+
+function buildArgusResumePrompt(reason: string): string {
+  return [
+    "Continue where you left off. The previous model attempt failed before you could finish the task.",
+    `Recovery reason: ${reason}.`,
+    "Resume the same task in the same session. Do not restart from scratch unless the context is unusable.",
+  ].join(" ");
+}
 
 export async function runReplyAgent(params: {
   commandBody: string;
@@ -349,6 +360,108 @@ export async function runReplyAgent(params: {
         `Role ordering conflict (${reason}). Restarting session ${sessionKey} -> ${nextSessionId}.`,
       cleanupTranscripts: true,
     });
+  const clearArgusRecoveryState = async () => {
+    if (!sessionKey || !activeSessionStore || !storePath) {
+      return;
+    }
+    const current = activeSessionStore[sessionKey] ?? activeSessionEntry;
+    if (!current?.argus || !isArgusRecoverySession(current)) {
+      return;
+    }
+    const updatedAt = Date.now();
+    const nextArgus = {
+      ...current.argus,
+      recoveryState: "verified" as const,
+      recoveryUpdatedAt: updatedAt,
+    };
+    delete nextArgus.recoveryReason;
+    delete nextArgus.recoveryResumeAt;
+    delete nextArgus.recoveryAttemptCount;
+    current.argus = nextArgus;
+    current.updatedAt = updatedAt;
+    activeSessionEntry = current;
+    activeSessionStore[sessionKey] = current;
+    await updateSessionStoreEntry({
+      storePath,
+      sessionKey,
+      update: async () => ({
+        argus: nextArgus,
+        updatedAt,
+      }),
+    });
+  };
+  const armArgusResumeSupervisor = async (plan: { delayMs: number; reason: string }) => {
+    if (!sessionKey || !activeSessionStore || !storePath) {
+      return false;
+    }
+    const current = activeSessionStore[sessionKey] ?? activeSessionEntry;
+    if (!current) {
+      return false;
+    }
+    const currentAttempts = current.argus?.recoveryAttemptCount ?? 0;
+    if (currentAttempts >= MAX_ARGUS_RESUME_ATTEMPTS) {
+      return false;
+    }
+    const updatedAt = Date.now();
+    const recoveryResumeAt = updatedAt + Math.max(1, Math.floor(plan.delayMs));
+    const nextArgus = {
+      ...(current.argus ?? {
+        mainlineState: "protected" as const,
+        protectUntil: recoveryResumeAt,
+      }),
+      mainlineState: "protected" as const,
+      protectUntil: Math.max(current.argus?.protectUntil ?? 0, recoveryResumeAt),
+      recoveryState: "active" as const,
+      recoveryUpdatedAt: updatedAt,
+      recoveryReason: plan.reason,
+      recoveryResumeAt,
+      recoveryAttemptCount: currentAttempts + 1,
+    };
+    current.argus = nextArgus;
+    current.updatedAt = updatedAt;
+    activeSessionEntry = current;
+    activeSessionStore[sessionKey] = current;
+    await updateSessionStoreEntry({
+      storePath,
+      sessionKey,
+      update: async () => ({
+        argus: nextArgus,
+        updatedAt,
+      }),
+    });
+
+    const queuedResumeRun: FollowupRun = {
+      ...followupRun,
+      prompt: buildArgusResumePrompt(plan.reason),
+      summaryLine: `Argus resume after ${plan.reason}`,
+      enqueuedAt: recoveryResumeAt,
+    };
+    setTimeout(
+      () => {
+        try {
+          const latestStore = loadSessionStore(storePath);
+          const latestEntry = latestStore[sessionKey] ?? activeSessionStore[sessionKey];
+          if (!latestEntry?.argus || latestEntry.argus.recoveryState !== "active") {
+            return;
+          }
+          if (
+            typeof latestEntry.argus.recoveryResumeAt === "number" &&
+            latestEntry.argus.recoveryResumeAt > recoveryResumeAt
+          ) {
+            return;
+          }
+          enqueueFollowupRun(queueKey, queuedResumeRun, resolvedQueue, "none");
+          scheduleFollowupDrain(queueKey, runFollowupTurn);
+        } catch (err) {
+          defaultRuntime.error(
+            `Argus resume supervisor failed to enqueue recovery for ${sessionKey}: ${String(err)}`,
+          );
+        }
+      },
+      Math.max(1, Math.floor(plan.delayMs)),
+    );
+    return true;
+  };
   try {
     const runStartedAt = Date.now();
     const runOutcome = await runAgentTurnWithFallback({
@@ -376,6 +489,9 @@ export async function runReplyAgent(params: {
     });
 
     if (runOutcome.kind === "final") {
+      if (runOutcome.argusResumePlan) {
+        await armArgusResumeSupervisor(runOutcome.argusResumePlan);
+      }
       return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
     }
 
@@ -388,6 +504,7 @@ export async function runReplyAgent(params: {
       directlySentBlockKeys,
     } = runOutcome;
     let { didLogHeartbeatStrip, autoCompactionCount } = runOutcome;
+    await clearArgusRecoveryState();
 
     if (
       shouldInjectGroupIntro &&

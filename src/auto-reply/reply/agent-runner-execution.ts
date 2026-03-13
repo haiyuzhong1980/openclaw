@@ -4,6 +4,7 @@ import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-pay
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import { getCliSessionId } from "../../agents/cli-session.js";
+import { describeFailoverError } from "../../agents/failover-error.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import {
@@ -72,7 +73,93 @@ export type AgentRunLoopResult =
       /** Payload keys sent directly (not via pipeline) during tool flush. */
       directlySentBlockKeys?: Set<string>;
     }
-  | { kind: "final"; payload: ReplyPayload };
+  | {
+      kind: "final";
+      payload: ReplyPayload;
+      argusResumePlan?: {
+        delayMs: number;
+        reason: string;
+      };
+    };
+
+const ARGUS_RECOVERABLE_FAILOVER_REASONS = new Set(["rate_limit", "overloaded", "timeout"]);
+
+function resolveArgusResumeDelayMs(reason: "rate_limit" | "overloaded" | "timeout"): number {
+  const fastTestMode = process.env.OPENCLAW_TEST_FAST === "1";
+  if (fastTestMode) {
+    if (reason === "timeout") {
+      return 15;
+    }
+    return 25;
+  }
+  switch (reason) {
+    case "rate_limit":
+      return 5 * 60_000;
+    case "overloaded":
+      return 3 * 60_000;
+    case "timeout":
+      return 2 * 60_000;
+  }
+}
+
+function resolveArgusResumePlan(params: {
+  message: string;
+  sessionKey?: string;
+  isHeartbeat: boolean;
+  isContextOverflow: boolean;
+  isRoleOrderingError: boolean;
+  isCompactionFailure: boolean;
+  isSessionCorruption: boolean;
+}):
+  | {
+      delayMs: number;
+      reason: string;
+      userMessage: string;
+    }
+  | undefined {
+  if (
+    !params.sessionKey ||
+    params.isHeartbeat ||
+    params.isContextOverflow ||
+    params.isRoleOrderingError ||
+    params.isCompactionFailure ||
+    params.isSessionCorruption
+  ) {
+    return undefined;
+  }
+
+  const failover = describeFailoverError({ message: params.message });
+  const reason = failover.reason;
+  if (!reason || !ARGUS_RECOVERABLE_FAILOVER_REASONS.has(reason)) {
+    return undefined;
+  }
+
+  switch (reason) {
+    case "rate_limit":
+      return {
+        delayMs: resolveArgusResumeDelayMs(reason),
+        reason,
+        userMessage:
+          "⚠️ Hit model rate limits while finishing this task. I’ll keep the session warm and retry automatically.",
+      };
+    case "overloaded":
+      return {
+        delayMs: resolveArgusResumeDelayMs(reason),
+        reason,
+        userMessage:
+          "⚠️ The model provider is overloaded right now. I’ll keep the session warm and retry automatically.",
+      };
+    case "timeout":
+      return {
+        delayMs: resolveArgusResumeDelayMs(reason),
+        reason,
+        userMessage:
+          "⚠️ The model timed out while finishing this task. I’ll keep the session warm and retry automatically.",
+      };
+    default:
+      return undefined;
+  }
+}
 
 export async function runAgentTurnWithFallback(params: {
   commandBody: string;
@@ -623,23 +710,40 @@ export async function runAgentTurnWithFallback(params: {
       }
 
       defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
+      const argusResumePlan = resolveArgusResumePlan({
+        message,
+        sessionKey: params.sessionKey,
+        isHeartbeat: params.isHeartbeat,
+        isContextOverflow,
+        isRoleOrderingError,
+        isCompactionFailure,
+        isSessionCorruption,
+      });
       const safeMessage = isTransientHttp
         ? sanitizeUserFacingText(message, { errorContext: true })
         : message;
       const trimmedMessage = safeMessage.replace(/\.\s*$/, "");
-      const fallbackText = isBilling
-        ? BILLING_ERROR_USER_MESSAGE
-        : isContextOverflow
+      const fallbackText =
+        isBilling
+          ? BILLING_ERROR_USER_MESSAGE
+          : argusResumePlan?.userMessage ??
+            (isContextOverflow
           ? "⚠️ Context overflow — prompt too large for this model. Try a shorter message or a larger-context model."
           : isRoleOrderingError
             ? "⚠️ Message ordering conflict - please try again. If this persists, use /new to start a fresh session."
-            : `⚠️ Agent failed before reply: ${trimmedMessage}.\nLogs: openclaw logs --follow`;
+            : `⚠️ Agent failed before reply: ${trimmedMessage}.\nLogs: openclaw logs --follow`);
 
       return {
         kind: "final",
         payload: {
           text: fallbackText,
         },
+        argusResumePlan: argusResumePlan
+          ? {
+              delayMs: argusResumePlan.delayMs,
+              reason: argusResumePlan.reason,
+            }
+          : undefined,
       };
     }
   }
