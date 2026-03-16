@@ -24,8 +24,20 @@ const writeFileMock = vi.hoisted(() =>
 
 const mkdirMock = vi.hoisted(() => vi.fn(async () => {}));
 const rmMock = vi.hoisted(() => vi.fn(async () => {}));
+const unlinkMock = vi.hoisted(() => vi.fn(async () => {}));
 const statMock = vi.hoisted(() => vi.fn(async () => ({ mtimeMs: Date.now() })));
 const inferSessionReplyLanguageMock = vi.hoisted(() => vi.fn());
+
+const openMock = vi.hoisted(() => {
+  const mockFd = {
+    writeFile: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
+  };
+  return {
+    fn: vi.fn(async () => mockFd),
+    mockFd,
+  };
+});
 
 vi.mock("node:fs/promises", () => ({
   default: {
@@ -33,7 +45,9 @@ vi.mock("node:fs/promises", () => ({
     writeFile: writeFileMock,
     mkdir: mkdirMock,
     rm: rmMock,
+    unlink: unlinkMock,
     stat: statMock,
+    open: openMock.fn,
   },
 }));
 
@@ -81,8 +95,16 @@ describe("consumePendingOagSystemNotes", () => {
     mkdirMock.mockImplementation(async () => {});
     rmMock.mockReset();
     rmMock.mockImplementation(async () => {});
+    unlinkMock.mockReset();
+    unlinkMock.mockImplementation(async () => {});
     statMock.mockReset();
     statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
+    openMock.fn.mockReset();
+    openMock.mockFd.writeFile.mockReset();
+    openMock.mockFd.close.mockReset();
+    openMock.fn.mockImplementation(async () => openMock.mockFd);
+    openMock.mockFd.writeFile.mockImplementation(async () => {});
+    openMock.mockFd.close.mockImplementation(async () => {});
     inferSessionReplyLanguageMock.mockReset();
     inferSessionReplyLanguageMock.mockResolvedValue(undefined);
   });
@@ -248,8 +270,7 @@ describe("consumePendingOagSystemNotes", () => {
     readFileMock.mockRejectedValueOnce(new Error("ENOENT"));
 
     await expect(consumePendingOagSystemNotes("telegram:+1234")).resolves.toEqual([]);
-    expect(writeFileMock).toHaveBeenCalledTimes(1);
-    expect(writeFileMock.mock.calls[0]?.[0]).toBe(`${statePath}.lock/pid`);
+    expect(openMock.fn).toHaveBeenCalledWith(`${statePath}.lock`, "wx");
   });
 
   it("returns empty array when pending_user_notes is empty", async () => {
@@ -260,7 +281,8 @@ describe("consumePendingOagSystemNotes", () => {
 
     await expect(consumePendingOagSystemNotes("telegram:+1234")).resolves.toEqual([]);
 
-    expect(writeFileMock).toHaveBeenCalledTimes(1);
+    // State file is not rewritten when there are no matching notes to consume.
+    expect(writeFileMock).toHaveBeenCalledTimes(0);
     expect(getWrittenState()).toEqual({
       pending_user_notes: [],
       delivered_user_notes: [{ id: "history" }],
@@ -355,8 +377,16 @@ describe("note deduplication", () => {
     mkdirMock.mockImplementation(async () => {});
     rmMock.mockReset();
     rmMock.mockImplementation(async () => {});
+    unlinkMock.mockReset();
+    unlinkMock.mockImplementation(async () => {});
     statMock.mockReset();
     statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
+    openMock.fn.mockReset();
+    openMock.mockFd.writeFile.mockReset();
+    openMock.mockFd.close.mockReset();
+    openMock.fn.mockImplementation(async () => openMock.mockFd);
+    openMock.mockFd.writeFile.mockImplementation(async () => {});
+    openMock.mockFd.close.mockImplementation(async () => {});
     inferSessionReplyLanguageMock.mockReset();
     inferSessionReplyLanguageMock.mockResolvedValue(undefined);
   });
@@ -453,7 +483,6 @@ describe("note deduplication", () => {
 describe("stale lock recovery", () => {
   const originalHome = process.env.HOME;
   const lockPath = `${statePath}.lock`;
-  const pidPath = `${lockPath}/pid`;
 
   beforeEach(() => {
     process.env.HOME = homeDir;
@@ -476,8 +505,16 @@ describe("stale lock recovery", () => {
     mkdirMock.mockImplementation(async () => {});
     rmMock.mockReset();
     rmMock.mockImplementation(async () => {});
+    unlinkMock.mockReset();
+    unlinkMock.mockImplementation(async () => {});
     statMock.mockReset();
     statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
+    openMock.fn.mockReset();
+    openMock.mockFd.writeFile.mockReset();
+    openMock.mockFd.close.mockReset();
+    openMock.fn.mockImplementation(async () => openMock.mockFd);
+    openMock.mockFd.writeFile.mockImplementation(async () => {});
+    openMock.mockFd.close.mockImplementation(async () => {});
     inferSessionReplyLanguageMock.mockReset();
     inferSessionReplyLanguageMock.mockResolvedValue(undefined);
   });
@@ -502,14 +539,15 @@ describe("stale lock recovery", () => {
       ],
       delivered_user_notes: [],
     });
-    mockState.files.set(pidPath, "99999999");
-    mkdirMock
-      .mockImplementationOnce(async () => {})
+    // Seed the lock file directly with a dead PID
+    mockState.files.set(lockPath, "99999999");
+    openMock.fn
       .mockImplementationOnce(async () => {
         const error = new Error("EEXIST") as NodeJS.ErrnoException;
         error.code = "EEXIST";
         throw error;
-      });
+      })
+      .mockImplementationOnce(async () => openMock.mockFd);
 
     await expect(consumePendingOagSystemNotes("telegram:+1234")).resolves.toEqual([
       {
@@ -518,11 +556,11 @@ describe("stale lock recovery", () => {
       },
     ]);
 
-    expect(rmMock).toHaveBeenCalledWith(lockPath, { recursive: true, force: true });
-    expect(writeFileMock).toHaveBeenCalledWith(pidPath, String(process.pid), "utf8");
+    expect(unlinkMock).toHaveBeenCalledWith(lockPath);
+    expect(openMock.mockFd.writeFile).toHaveBeenCalledWith(String(process.pid), "utf8");
   });
 
-  it("recovers from stale lock when no PID file exists (legacy lock)", async () => {
+  it("recovers from stale lock when no lock file content exists (stale file)", async () => {
     setStateFile({
       pending_user_notes: [
         {
@@ -534,15 +572,16 @@ describe("stale lock recovery", () => {
       ],
       delivered_user_notes: [],
     });
-    mkdirMock
-      .mockImplementationOnce(async () => {})
+    openMock.fn
       .mockImplementationOnce(async () => {
         const error = new Error("EEXIST") as NodeJS.ErrnoException;
         error.code = "EEXIST";
         throw error;
-      });
+      })
+      .mockImplementationOnce(async () => openMock.mockFd);
+    // readFile for the lockPath throws ENOENT — no content, treated as stale
     readFileMock.mockImplementation(async (filePath: string) => {
-      if (filePath === pidPath) {
+      if (filePath === lockPath) {
         const error = new Error("ENOENT") as NodeJS.ErrnoException;
         error.code = "ENOENT";
         throw error;
@@ -560,10 +599,10 @@ describe("stale lock recovery", () => {
       },
     ]);
 
-    expect(rmMock).toHaveBeenCalledWith(lockPath, { recursive: true, force: true });
+    expect(unlinkMock).toHaveBeenCalledWith(lockPath);
   });
 
-  it("writes PID file after acquiring lock", async () => {
+  it("writes PID into lock file after acquiring lock", async () => {
     setStateFile({
       pending_user_notes: [
         {
@@ -578,6 +617,6 @@ describe("stale lock recovery", () => {
 
     await consumePendingOagSystemNotes("telegram:+1234");
 
-    expect(writeFileMock).toHaveBeenCalledWith(pidPath, String(process.pid), "utf8");
+    expect(openMock.mockFd.writeFile).toHaveBeenCalledWith(String(process.pid), "utf8");
   });
 });

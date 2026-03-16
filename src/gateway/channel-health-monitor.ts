@@ -1,4 +1,5 @@
 import type { ChannelId } from "../channels/plugins/types.js";
+import { incrementOagMetric } from "../infra/oag-metrics.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
@@ -163,6 +164,7 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
             }
             channelManager.resetRestartAttempts(channelId as ChannelId, accountId);
             await channelManager.startChannel(channelId as ChannelId, accountId);
+            incrementOagMetric("channelRestarts");
             record.lastRestartAt = now;
             record.restartsThisHour.push({ at: now });
             restartRecords.set(key, record);

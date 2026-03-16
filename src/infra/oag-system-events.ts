@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { incrementOagMetric } from "./oag-metrics.js";
 import { inferSessionReplyLanguage, type SessionReplyLanguage } from "./session-language.js";
 
 type OagNoteTarget = {
@@ -27,7 +28,6 @@ const OAG_STATE_LOCK_SUFFIX = ".lock";
 const OAG_STATE_LOCK_RETRY_MS = 25;
 const OAG_STATE_LOCK_TIMEOUT_MS = 2_000;
 const OAG_STATE_LOCK_STALE_MS = 30_000;
-const OAG_STATE_LOCK_PID_FILE = "pid";
 
 function resolveLocalizedOagMessage(
   note: OagPendingUserNote,
@@ -65,10 +65,10 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function isLockStale(lockPath: string): Promise<boolean> {
-  const pidPath = path.join(lockPath, OAG_STATE_LOCK_PID_FILE);
   try {
-    const content = await fs.readFile(pidPath, "utf8");
-    const pid = Number.parseInt(content.trim(), 10);
+    const content = await fs.readFile(lockPath, "utf8");
+    const lines = content.trim().split("\n");
+    const pid = Number.parseInt(lines[0] ?? "", 10);
     if (Number.isNaN(pid) || pid <= 0) {
       return true;
     }
@@ -76,14 +76,14 @@ async function isLockStale(lockPath: string): Promise<boolean> {
       // Signal 0 checks if the process exists without sending a signal.
       process.kill(pid, 0);
       // Process exists — check lock age as a fallback safety net.
-      const stat = await fs.stat(pidPath);
+      const stat = await fs.stat(lockPath);
       return Date.now() - stat.mtimeMs > OAG_STATE_LOCK_STALE_MS;
     } catch {
       // Process does not exist — lock is stale.
       return true;
     }
   } catch {
-    // No PID file — treat as stale (legacy lock from before this fix).
+    // No lock file content — treat as stale.
     return true;
   }
 }
@@ -92,9 +92,12 @@ async function withOagStateLock<T>(statePath: string, fn: () => Promise<T>): Pro
   const lockPath = `${statePath}${OAG_STATE_LOCK_SUFFIX}`;
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
   const deadline = Date.now() + OAG_STATE_LOCK_TIMEOUT_MS;
+  let fd: import("node:fs/promises").FileHandle | null = null;
   while (true) {
     try {
-      await fs.mkdir(lockPath);
+      // "wx" = O_CREAT | O_EXCL | O_WRONLY — atomic create, fails if file exists.
+      fd = await fs.open(lockPath, "wx");
+      incrementOagMetric("lockAcquisitions");
       break;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -102,7 +105,8 @@ async function withOagStateLock<T>(statePath: string, fn: () => Promise<T>): Pro
         throw error;
       }
       if (await isLockStale(lockPath)) {
-        await fs.rm(lockPath, { recursive: true, force: true });
+        await fs.unlink(lockPath).catch(() => {});
+        incrementOagMetric("lockStalRecoveries");
         continue;
       }
       if (Date.now() >= deadline) {
@@ -111,16 +115,13 @@ async function withOagStateLock<T>(statePath: string, fn: () => Promise<T>): Pro
       await sleep(OAG_STATE_LOCK_RETRY_MS);
     }
   }
-  // Write PID file so other processes can detect stale locks.
   try {
-    await fs.writeFile(path.join(lockPath, OAG_STATE_LOCK_PID_FILE), String(process.pid), "utf8");
-  } catch {
-    // Best-effort — the lock itself is still held via the directory.
-  }
-  try {
+    // Write PID into the lock file so other processes can detect stale locks.
+    await fd.writeFile(String(process.pid), "utf8");
     return await fn();
   } finally {
-    await fs.rm(lockPath, { recursive: true, force: true });
+    await fd.close().catch(() => {});
+    await fs.unlink(lockPath).catch(() => {});
   }
 }
 
@@ -262,6 +263,9 @@ export async function consumePendingOagSystemNotes(sessionKey: string): Promise<
     return [];
   }
   const deduplicated = deduplicateNotesByAction(matched);
+  if (matched.length - deduplicated.length > 0) {
+    incrementOagMetric("noteDeduplications", matched.length - deduplicated.length);
+  }
   const sorted = deduplicated
     .slice()
     .toSorted((left, right) => resolveNoteTimestamp(left) - resolveNoteTimestamp(right));
@@ -276,6 +280,9 @@ export async function consumePendingOagSystemNotes(sessionKey: string): Promise<
       text: `OAG: ${message}`,
       ts: timestamp > 0 ? timestamp : Date.now(),
     });
+  }
+  if (results.length > 0) {
+    incrementOagMetric("noteDeliveries", results.length);
   }
   return results;
 }

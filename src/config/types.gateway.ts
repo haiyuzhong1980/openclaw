@@ -1,3 +1,4 @@
+import type { OagConfig } from "./types.oag.js";
 import type { SecretInput } from "./types.secrets.js";
 
 export type GatewayBindMode = "auto" | "lan" | "loopback" | "custom" | "tailnet";
@@ -450,4 +451,6 @@ export type GatewayConfig = {
    * the rolling window expires. Default: 10.
    */
   channelMaxRestartsPerHour?: number;
+  /** OAG (OpenClaw Agent Gateway) tuning parameters. All fields are optional; defaults are applied at runtime. */
+  oag?: OagConfig;
 };
