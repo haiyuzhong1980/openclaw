@@ -69,26 +69,62 @@
 
 ### P1-7: Extend language detection (ja, ko)
 
-- **Status:** [ ] Not started
+- **File:** `src/infra/session-language.ts` (modify) + `src/infra/session-language.test.ts` (extend)
+- **Scope:**
+  - Add `ja` detection via Hiragana/Katakana ranges (U+3040-309F, U+30A0-30FF)
+  - Add `ko` detection via Hangul range (U+AC00-D7AF, U+1100-11FF)
+  - Conservative thresholds matching existing zh-Hans pattern
+  - Update `SessionReplyLanguage` type to include `"ja"` and `"ko"`
+  - Add localization fallback in `resolveLocalizedOagMessage` for ja/ko (use English hardcoded)
+  - Add tests for pure Japanese, pure Korean, mixed content, edge cases
+- **Acceptance:** Tests pass, existing zh-Hans/en tests unbroken
+- **Status:** [ ] In progress
 
 ### P1-8: OAG note deduplication
 
-- **Status:** [ ] Not started
+- **File:** `src/infra/oag-system-events.ts` (modify) + `src/infra/oag-system-events.test.ts` (extend)
+- **Scope:**
+  - Before returning consumed notes, deduplicate by `action` within a 60-second window
+  - Keep the most recent note per action group
+  - Ensure dedup only affects the return value, not the delivered_user_notes audit trail
+  - Add tests: duplicate actions within window collapsed, different actions preserved, outside window preserved
+- **Acceptance:** Tests pass, existing tests unbroken
+- **Status:** [ ] In progress
 
 ---
 
 ## P2 — Medium-term improvements
 
-### P2-4: Replace file lock with proper-lockfile
+### P2-4: Harden file lock with atomic open
 
+- **File:** `src/infra/oag-system-events.ts` (modify) + `src/infra/oag-system-events.test.ts` (extend)
+- **Scope:**
+  - Replace mkdir-based lock with `fs.open` using `O_CREAT | O_EXCL | O_WRONLY` for true atomic lock file
+  - Write PID + timestamp into the lock file (not a directory)
+  - Stale detection: read PID from lock file, check process alive + age
+  - No new npm dependency needed
+- **Acceptance:** Tests pass, lock mechanism more robust
 - **Status:** [ ] Not started
 
-### P2-6: Expose Prometheus-style health metrics
+### P2-6: OAG health metrics collector
 
+- **File:** `src/infra/oag-metrics.ts` (new) + `src/infra/oag-metrics.test.ts` (new)
+- **Scope:**
+  - Create `OagMetrics` collector with counters: channel_restarts, delivery_recoveries, stale_detections, note_deliveries
+  - Expose `getOagMetrics()` for JSON endpoint consumption
+  - Wire into channel recovery hook and health monitor
+  - Add tests for counter increments
+- **Acceptance:** Tests pass, metrics accessible via gateway health endpoint
 - **Status:** [ ] Not started
 
 ### P2-11: Consolidate OAG config into gateway.oag section
 
+- **File:** `src/config/config.ts` (extend type), `src/infra/oag-system-events.ts` + `src/gateway/channel-health-policy.ts` + `src/infra/outbound/delivery-queue.ts` (read config)
+- **Scope:**
+  - Define `gateway.oag` config type with: delivery.maxRetries, delivery.recoveryBudgetMs, lock.timeoutMs, lock.staleMs, health.stalePollFactor
+  - Replace hardcoded constants with config reads (fallback to current defaults)
+  - Add tests for config override behavior
+- **Acceptance:** Tests pass, defaults unchanged, config overrides work
 - **Status:** [ ] Not started
 
 ---

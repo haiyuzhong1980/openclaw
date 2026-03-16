@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { inferSessionReplyLanguage } from "./session-language.js";
+import { inferSessionReplyLanguage, type SessionReplyLanguage } from "./session-language.js";
 
 type OagNoteTarget = {
   sessionKeys?: string[];
@@ -29,7 +29,10 @@ const OAG_STATE_LOCK_TIMEOUT_MS = 2_000;
 const OAG_STATE_LOCK_STALE_MS = 30_000;
 const OAG_STATE_LOCK_PID_FILE = "pid";
 
-function resolveLocalizedOagMessage(note: OagPendingUserNote, language?: "zh-Hans" | "en"): string {
+function resolveLocalizedOagMessage(
+  note: OagPendingUserNote,
+  language?: SessionReplyLanguage,
+): string {
   const fallback = String(note.message ?? "").trim();
   if (language === "zh-Hans") {
     return fallback;
@@ -154,6 +157,56 @@ function resolveNoteTimestamp(note: OagPendingUserNote): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+const OAG_NOTE_DEDUP_WINDOW_MS = 60_000;
+
+function deduplicateNotesByAction(notes: OagPendingUserNote[]): OagPendingUserNote[] {
+  if (notes.length <= 1) {
+    return notes;
+  }
+  // Notes without a non-empty action are never deduplicated — each is a distinct event.
+  const withAction: OagPendingUserNote[] = [];
+  const withoutAction: OagPendingUserNote[] = [];
+  for (const note of notes) {
+    if (note.action?.trim()) {
+      withAction.push(note);
+    } else {
+      withoutAction.push(note);
+    }
+  }
+  if (withAction.length === 0) {
+    return notes;
+  }
+  const grouped = new Map<string, OagPendingUserNote[]>();
+  for (const note of withAction) {
+    const key = note.action as string;
+    const group = grouped.get(key);
+    if (group) {
+      group.push(note);
+    } else {
+      grouped.set(key, [note]);
+    }
+  }
+  const result: OagPendingUserNote[] = [...withoutAction];
+  for (const [, group] of grouped) {
+    if (group.length === 1) {
+      result.push(group[0]);
+      continue;
+    }
+    // Sort by timestamp descending to find the most recent
+    group.sort((a, b) => resolveNoteTimestamp(b) - resolveNoteTimestamp(a));
+    const newest = group[0];
+    const newestTs = resolveNoteTimestamp(newest);
+    // Only deduplicate notes within the time window of the newest
+    const deduped = group.filter(
+      (note) => note === newest || newestTs - resolveNoteTimestamp(note) > OAG_NOTE_DEDUP_WINDOW_MS,
+    );
+    result.push(...deduped);
+  }
+  // Re-sort ascending by timestamp for consistent output
+  result.sort((a, b) => resolveNoteTimestamp(a) - resolveNoteTimestamp(b));
+  return result;
+}
+
 export async function consumePendingOagSystemNotes(sessionKey: string): Promise<
   Array<{
     text: string;
@@ -208,7 +261,8 @@ export async function consumePendingOagSystemNotes(sessionKey: string): Promise<
   if (matched.length === 0) {
     return [];
   }
-  const sorted = matched
+  const deduplicated = deduplicateNotesByAction(matched);
+  const sorted = deduplicated
     .slice()
     .toSorted((left, right) => resolveNoteTimestamp(left) - resolveNoteTimestamp(right));
   const results: Array<{ text: string; ts: number }> = [];

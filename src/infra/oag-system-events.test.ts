@@ -331,6 +331,125 @@ describe("consumePendingOagSystemNotes", () => {
   });
 });
 
+describe("note deduplication", () => {
+  const originalHome = process.env.HOME;
+
+  beforeEach(() => {
+    process.env.HOME = homeDir;
+    mockState.files.clear();
+    readFileMock.mockReset();
+    readFileMock.mockImplementation(async (filePath: string) => {
+      if (!mockState.files.has(filePath)) {
+        throw new Error(`ENOENT: ${filePath}`);
+      }
+      return mockState.files.get(filePath) ?? "";
+    });
+    writeFileMock.mockReset();
+    writeFileMock.mockImplementation(async (filePath: string, content: string | Buffer) => {
+      mockState.files.set(
+        filePath,
+        typeof content === "string" ? content : content.toString("utf8"),
+      );
+    });
+    mkdirMock.mockReset();
+    mkdirMock.mockImplementation(async () => {});
+    rmMock.mockReset();
+    rmMock.mockImplementation(async () => {});
+    statMock.mockReset();
+    statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
+    inferSessionReplyLanguageMock.mockReset();
+    inferSessionReplyLanguageMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+      return;
+    }
+    process.env.HOME = originalHome;
+  });
+
+  it("deduplicates notes with the same action within 60s window", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "a1",
+          action: "channel_backlog_cleared",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "Cleared 1",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+        {
+          id: "a2",
+          action: "channel_backlog_cleared",
+          created_at: "2026-03-16T00:00:30.000Z",
+          message: "Cleared 2",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+    });
+
+    const notes = await consumePendingOagSystemNotes("telegram:+1234");
+    // Within 60s window, only the most recent is shown
+    expect(notes).toHaveLength(1);
+    // channel_backlog_cleared maps to the hardcoded English message
+    expect(notes[0].text).toContain("Channel backlog cleared and delivery resumed.");
+
+    // But both are in delivered_user_notes
+    const written = getWrittenState();
+    expect(written.delivered_user_notes).toHaveLength(2);
+  });
+
+  it("preserves notes with different actions", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "b1",
+          action: "recovery_verify",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "Verify",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+        {
+          id: "b2",
+          action: "channel_backlog_cleared",
+          created_at: "2026-03-16T00:00:02.000Z",
+          message: "Cleared",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+    });
+
+    const notes = await consumePendingOagSystemNotes("telegram:+1234");
+    expect(notes).toHaveLength(2);
+  });
+
+  it("preserves duplicate actions outside the 60s window", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "c1",
+          action: "recovery_verify",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "First verify",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+        {
+          id: "c2",
+          action: "recovery_verify",
+          created_at: "2026-03-16T00:05:00.000Z",
+          message: "Second verify",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+    });
+
+    const notes = await consumePendingOagSystemNotes("telegram:+1234");
+    // 5 minutes apart → both preserved
+    expect(notes).toHaveLength(2);
+  });
+});
+
 describe("stale lock recovery", () => {
   const originalHome = process.env.HOME;
   const lockPath = `${statePath}.lock`;

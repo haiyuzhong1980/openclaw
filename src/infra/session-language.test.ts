@@ -29,4 +29,22 @@ describe("detectSessionReplyLanguageFromText", () => {
   it("returns undefined for URL-heavy text that does not meet the Han threshold", () => {
     expect(detectSessionReplyLanguageFromText("请看 https://example.com/path")).toBeUndefined();
   });
+
+  it("returns ja for Japanese text with Hiragana/Katakana", () => {
+    expect(detectSessionReplyLanguageFromText("こんにちは")).toBe("ja");
+    expect(detectSessionReplyLanguageFromText("テスト")).toBe("ja");
+    expect(detectSessionReplyLanguageFromText("カタカナ test")).toBe("ja");
+  });
+
+  it("returns ko for Korean text with Hangul", () => {
+    expect(detectSessionReplyLanguageFromText("안녕하세요")).toBe("ko");
+    expect(detectSessionReplyLanguageFromText("테스트 입니다")).toBe("ko");
+  });
+
+  it("distinguishes Chinese from Japanese when both Han and Kana present", () => {
+    // Text with kana → Japanese even if Han characters present
+    expect(detectSessionReplyLanguageFromText("東京タワー")).toBe("ja");
+    // Pure Han → Chinese
+    expect(detectSessionReplyLanguageFromText("东京塔")).toBe("zh-Hans");
+  });
 });
