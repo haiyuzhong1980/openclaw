@@ -2,10 +2,21 @@ import type { OpenClawConfig } from "../config/config.js";
 import { buildGatewayConnectionDetails, callGateway } from "../gateway/call.js";
 import type { DoctorMemoryStatusPayload } from "../gateway/server-methods/doctor.js";
 import { collectChannelStatusIssues } from "../infra/channels-status-issues.js";
+import { loadOagMemory } from "../infra/oag-memory.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { note } from "../terminal/note.js";
 import { formatHealthCheckFailure } from "./health-format.js";
 import { healthCommand } from "./health.js";
+import {
+  formatOagChannelHealthAdvice,
+  formatOagChannelHealthLine,
+  formatOagEvolutionLine,
+  formatOagSessionWatchAdvice,
+  formatOagSessionWatchLine,
+  formatOagTaskWatchAdvice,
+  formatOagTaskWatchLine,
+  readOagChannelHealthSummary,
+} from "./oag-channel-health.js";
 
 export type GatewayMemoryProbe = {
   checked: boolean;
@@ -36,6 +47,30 @@ export async function checkGatewayHealth(params: {
   }
 
   if (healthOk) {
+    const oagChannelHealth = await readOagChannelHealthSummary();
+    if (oagChannelHealth) {
+      note(formatOagChannelHealthLine(oagChannelHealth), "OAG channel health");
+      const advice = formatOagChannelHealthAdvice(oagChannelHealth);
+      if (advice) {
+        note(advice, "OAG channel action");
+      }
+      note(formatOagSessionWatchLine(oagChannelHealth), "OAG session watch");
+      const sessionAdvice = formatOagSessionWatchAdvice(oagChannelHealth);
+      if (sessionAdvice) {
+        note(sessionAdvice, "OAG session action");
+      }
+      note(formatOagTaskWatchLine(oagChannelHealth), "OAG task watch");
+      const taskAdvice = formatOagTaskWatchAdvice(oagChannelHealth);
+      if (taskAdvice) {
+        note(taskAdvice, "OAG task action");
+      }
+      try {
+        const memory = await loadOagMemory();
+        note(formatOagEvolutionLine(memory), "OAG evolution");
+      } catch {
+        // Best effort — evolution display is not critical
+      }
+    }
     try {
       const status = await callGateway({
         method: "channels.status",

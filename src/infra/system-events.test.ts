@@ -303,7 +303,7 @@ describe("system events (session routing)", () => {
     }
   });
 
-  it("coalesces multiple matched OAG notes into the latest single line", async () => {
+  it("returns all matched OAG notes with different actions as separate lines", async () => {
     const previousHome = process.env.HOME;
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-oag-note-coalesce-"));
     process.env.HOME = tempHome;
@@ -383,9 +383,10 @@ describe("system events (session routing)", () => {
         isNewSession: false,
       });
 
-      expect(result?.split("\n")).toHaveLength(1);
+      // Different actions are preserved as separate notes (dedup only collapses same-action within 60s)
+      expect(result?.split("\n")).toHaveLength(2);
       expect(result).toContain("刚才消息通道短暂堵塞，积压已清空，系统已恢复处理。");
-      expect(result).not.toContain("刚才消息通道恢复不彻底");
+      expect(result).toContain("刚才消息通道恢复不彻底");
 
       const persisted = JSON.parse(await fs.readFile(statePath, "utf8")) as {
         pending_user_notes?: Array<{ id?: string }>;
