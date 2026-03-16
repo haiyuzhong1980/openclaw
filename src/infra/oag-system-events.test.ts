@@ -63,11 +63,26 @@ describe("consumePendingOagSystemNotes", () => {
   beforeEach(() => {
     process.env.HOME = homeDir;
     mockState.files.clear();
-    readFileMock.mockClear();
-    writeFileMock.mockClear();
-    mkdirMock.mockClear();
-    rmMock.mockClear();
-    statMock.mockClear();
+    readFileMock.mockReset();
+    readFileMock.mockImplementation(async (filePath: string) => {
+      if (!mockState.files.has(filePath)) {
+        throw new Error(`ENOENT: ${filePath}`);
+      }
+      return mockState.files.get(filePath) ?? "";
+    });
+    writeFileMock.mockReset();
+    writeFileMock.mockImplementation(async (filePath: string, content: string | Buffer) => {
+      mockState.files.set(
+        filePath,
+        typeof content === "string" ? content : content.toString("utf8"),
+      );
+    });
+    mkdirMock.mockReset();
+    mkdirMock.mockImplementation(async () => {});
+    rmMock.mockReset();
+    rmMock.mockImplementation(async () => {});
+    statMock.mockReset();
+    statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
     inferSessionReplyLanguageMock.mockReset();
     inferSessionReplyLanguageMock.mockResolvedValue(undefined);
   });
@@ -313,5 +328,137 @@ describe("consumePendingOagSystemNotes", () => {
         ts: Date.parse("2026-03-16T00:00:01.000Z"),
       },
     ]);
+  });
+});
+
+describe("stale lock recovery", () => {
+  const originalHome = process.env.HOME;
+  const lockPath = `${statePath}.lock`;
+  const pidPath = `${lockPath}/pid`;
+
+  beforeEach(() => {
+    process.env.HOME = homeDir;
+    mockState.files.clear();
+    readFileMock.mockReset();
+    readFileMock.mockImplementation(async (filePath: string) => {
+      if (!mockState.files.has(filePath)) {
+        throw new Error(`ENOENT: ${filePath}`);
+      }
+      return mockState.files.get(filePath) ?? "";
+    });
+    writeFileMock.mockReset();
+    writeFileMock.mockImplementation(async (filePath: string, content: string | Buffer) => {
+      mockState.files.set(
+        filePath,
+        typeof content === "string" ? content : content.toString("utf8"),
+      );
+    });
+    mkdirMock.mockReset();
+    mkdirMock.mockImplementation(async () => {});
+    rmMock.mockReset();
+    rmMock.mockImplementation(async () => {});
+    statMock.mockReset();
+    statMock.mockImplementation(async () => ({ mtimeMs: Date.now() }));
+    inferSessionReplyLanguageMock.mockReset();
+    inferSessionReplyLanguageMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+      return;
+    }
+    process.env.HOME = originalHome;
+  });
+
+  it("recovers from stale lock when holding process is dead", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "stale-dead-pid",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "Recovered",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+      delivered_user_notes: [],
+    });
+    mockState.files.set(pidPath, "99999999");
+    mkdirMock
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(async () => {
+        const error = new Error("EEXIST") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      });
+
+    await expect(consumePendingOagSystemNotes("telegram:+1234")).resolves.toEqual([
+      {
+        text: "OAG: Recovered",
+        ts: Date.parse("2026-03-16T00:00:01.000Z"),
+      },
+    ]);
+
+    expect(rmMock).toHaveBeenCalledWith(lockPath, { recursive: true, force: true });
+    expect(writeFileMock).toHaveBeenCalledWith(pidPath, String(process.pid), "utf8");
+  });
+
+  it("recovers from stale lock when no PID file exists (legacy lock)", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "legacy-lock",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "Recovered",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+      delivered_user_notes: [],
+    });
+    mkdirMock
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(async () => {
+        const error = new Error("EEXIST") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      });
+    readFileMock.mockImplementation(async (filePath: string) => {
+      if (filePath === pidPath) {
+        const error = new Error("ENOENT") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      if (!mockState.files.has(filePath)) {
+        throw new Error(`ENOENT: ${filePath}`);
+      }
+      return mockState.files.get(filePath) ?? "";
+    });
+
+    await expect(consumePendingOagSystemNotes("telegram:+1234")).resolves.toEqual([
+      {
+        text: "OAG: Recovered",
+        ts: Date.parse("2026-03-16T00:00:01.000Z"),
+      },
+    ]);
+
+    expect(rmMock).toHaveBeenCalledWith(lockPath, { recursive: true, force: true });
+  });
+
+  it("writes PID file after acquiring lock", async () => {
+    setStateFile({
+      pending_user_notes: [
+        {
+          id: "pid-write",
+          created_at: "2026-03-16T00:00:01.000Z",
+          message: "PID",
+          targets: [{ sessionKeys: ["telegram:+1234"] }],
+        },
+      ],
+      delivered_user_notes: [],
+    });
+
+    await consumePendingOagSystemNotes("telegram:+1234");
+
+    expect(writeFileMock).toHaveBeenCalledWith(pidPath, String(process.pid), "utf8");
   });
 });
