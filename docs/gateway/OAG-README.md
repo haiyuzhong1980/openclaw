@@ -1,58 +1,28 @@
 # OAG Runtime — Operational Assurance Gateway
 
 > **Branch:** `codex/argus-private-recovery`
-> **Status:** Functional, under validation
+> **Status:** Feature-complete, 204 tests passing
+> **Stats:** 14 commits, 50 files, 6,187 lines added
 
 ---
 
 ## What is OAG? / OAG 是什么？
 
-**OAG (Operational Assurance Gateway)** is the runtime observability and recovery layer built around the OpenClaw Gateway and agent loop. It watches three dimensions of system health — channel delivery pressure, stalled sessions, and stuck task follow-ups — then surfaces that state to operators via CLI and injects targeted recovery notes into user sessions.
+**OAG (Operational Assurance Gateway)** is the self-evolving runtime observability and recovery layer for the OpenClaw Gateway. It monitors channel delivery pressure, stalled sessions, and stuck task follow-ups, then automatically recovers, adapts its own parameters based on crash history, and notifies users — all without human intervention.
 
-**OAG（运维保障网关）** 是构建在 OpenClaw Gateway 和 Agent 循环之上的运行时可观测性与恢复层。它监控系统健康的三个维度——频道投递压力、会话停滞、任务跟进卡死——然后通过 CLI 向运维人员呈现状态，并向用户会话注入定向恢复通知。
-
----
-
-## Problem Statement / 解决的问题
-
-Before OAG, operational state was buried in logs and sentinel state files. Operators had no unified CLI surface to understand what the system was doing during degraded conditions, and users received no notification when the system performed recovery actions on their behalf.
-
-在 OAG 之前，运行状态散落在日志和 sentinel 状态文件中。运维人员没有统一的 CLI 界面来了解系统在降级状态下的行为，用户也不会在系统代为执行恢复操作时收到任何通知。
-
-**Specific gaps addressed / 具体解决的缺口：**
-
-| Gap                                                | Impact                                                  |
-| -------------------------------------------------- | ------------------------------------------------------- |
-| No operator visibility into delivery backlog       | Operators had to grep logs to detect congestion         |
-| No visibility into stalled sessions or stuck tasks | Watchdog activity was invisible outside log files       |
-| No user notification for recovery actions          | Users saw unexplained delays without context            |
-| Recovery replay was implicit or manual             | Queued messages could be lost after channel flaps       |
-| Language mismatch in system notes                  | Recovery notes ignored the user's conversation language |
-| Health monitor blind spots                         | Telegram/webhook channels had no staleness detection    |
-| 运维人员无法看到投递积压                           | 必须手动搜索日志才能发现拥塞                            |
-| 会话停滞和任务卡死不可见                           | 看门狗活动在日志之外完全不可见                          |
-| 恢复操作无用户通知                                 | 用户遇到无法解释的延迟却没有上下文                      |
-| 恢复重放隐式或手动                                 | 频道闪断后排队消息可能丢失                              |
-| 系统通知语言不匹配                                 | 恢复通知忽略了用户的会话语言                            |
-| 健康监控盲区                                       | Telegram/webhook 频道没有过期检测                       |
+**OAG（运维保障网关）** 是 OpenClaw Gateway 的自进化运行时可观测性与恢复层。它监控频道投递压力、会话停滞和任务跟进卡死，然后自动恢复、根据崩溃历史自适应调整参数并通知用户——全程无需人工干预。
 
 ---
 
 ## Features / 功能特性
 
-### 1. Operator-Facing Status Surfaces / 运维状态展示
+### 1. Operator-Facing Status / 运维状态展示
 
-OAG summaries are wired into three CLI commands:
+OAG summaries in three CLI commands / OAG 摘要集成到三个 CLI 命令：
 
-OAG 摘要已集成到三个 CLI 命令中：
-
-- **`openclaw status`** — shows `OAG channels`, `OAG sessions`, `OAG tasks` in the overview
-- **`openclaw health`** — includes OAG summaries when the Gateway is healthy enough to answer probes
-- **`openclaw doctor`** — includes the same OAG summaries in diagnostic output
-
-Each line provides a concise state label plus key metrics:
-
-每行提供简洁的状态标签和关键指标：
+- **`openclaw status`** — OAG channels / sessions / tasks overview
+- **`openclaw health --json`** — live Gateway snapshot with OAG metrics
+- **`openclaw doctor`** — diagnostic output with OAG summaries
 
 ```
 OAG channels:  congested · 12 pending · 3 failures · OAG containing pressure on telegram
@@ -60,209 +30,313 @@ OAG sessions:  watching 2 sessions · stalled:1, blocked:1 · telegram
 OAG tasks:     task follow-up · step 3/5 · 8m · escalation x2
 ```
 
-**Source:** `src/commands/oag-channel-health.ts`
-
 ### 2. Channel Recovery with Delivery Replay / 频道恢复与投递重放
 
-When a channel becomes operational again (reconnect or health transition), OAG automatically replays queued outbound deliveries scoped to that specific channel and account. This prevents message loss after channel flaps.
+When a channel reconnects, OAG automatically replays queued outbound deliveries for that channel:account. / 频道重连时，OAG 自动重放该频道:账户的排队消息。
 
-当频道恢复可用（重连或健康状态转换）时，OAG 会自动重放该特定频道和账户的排队出站投递，防止频道闪断后消息丢失。
+- Scoped to recovered channel:account only / 仅限已恢复的频道:账户
+- Concurrent recovery deduplicated / 并发恢复去重
+- Rapid reconnect triggers follow-up recovery pass / 快速重连触发跟进恢复
+- Crash-safe delivery queue with atomic rename / 崩溃安全投递队列（原子重命名）
+- JSON index for fast filtered lookups / JSON 索引加速过滤查询
 
-**Key behaviors / 关键行为：**
+### 3. One-Shot Recovery Notes / 一次性恢复通知
 
-- Recovery is scoped: only deliveries for the recovered channel:account are replayed / 恢复是限定作用域的：只重放已恢复频道:账户的投递
-- Concurrent recovery is deduplicated per channel:account / 并发恢复按频道:账户去重
-- Rapid reconnect triggers a follow-up recovery pass to catch deliveries queued during the first run / 快速重连会触发跟进恢复，捕获首次运行期间排队的投递
-- Delivery queue uses atomic rename for crash safety / 投递队列使用原子重命名保证崩溃安全
-
-**Source:** `src/gateway/server.impl.ts`, `src/infra/outbound/delivery-queue.ts`
-
-### 3. One-Shot Session Recovery Notes / 一次性会话恢复通知
-
-When OAG performs a user-visible recovery action, it injects a one-shot `OAG:` system note into the next matching session reply. Notes are consumed exactly once via a file-based lock with PID-based stale lock recovery.
-
-当 OAG 执行用户可见的恢复操作时，会向匹配的下次会话回复中注入一次性 `OAG:` 系统通知。通知通过基于文件的锁和 PID 过期检测实现精确的一次性消费。
-
-**Example notes / 示例通知：**
+OAG injects `OAG:` system notes into the next matching session reply. / OAG 向匹配的下次会话回复注入 `OAG:` 系统通知。
 
 ```
 OAG: I restarted the message gateway to clear lingering channel backlog.
 OAG: Channel backlog cleared and delivery resumed.
-OAG: I paused extra follow-ups until the affected channel recovers.
+OAG: I analyzed 4 recent incidents and adjusted the recovery budget to reduce channel disruption.
 ```
 
-**Key behaviors / 关键行为：**
+- Targeted to specific sessions via `sessionKeys` / 通过 `sessionKeys` 精准定向
+- Consumed exactly once / 精确一次消费
+- Deduplicated by action within 60s window (configurable) / 同 action 60 秒内去重（可配置）
+- Atomic file lock with PID-based stale recovery / 原子文件锁 + PID 过期回收
 
-- Notes are targeted to specific sessions via `sessionKeys` / 通知通过 `sessionKeys` 定向到特定会话
-- All matching notes are delivered (not just the latest) / 所有匹配的通知都会投递（不只是最新的）
-- Consumed notes are moved to `delivered_user_notes` for audit / 已消费的通知移到 `delivered_user_notes` 供审计
-- File lock includes PID-based stale detection to recover from process crashes / 文件锁包含基于 PID 的过期检测，可从进程崩溃中恢复
+### 4. Language Detection / 语言检测
 
-**Source:** `src/infra/oag-system-events.ts`
+| Language  | Detection             | Notes                                                |
+| --------- | --------------------- | ---------------------------------------------------- |
+| `zh-Hans` | Han characters ≥ 2    | 简体中文                                             |
+| `en`      | Latin ≥ 6, Han = 0    | English                                              |
+| `ja`      | Hiragana/Katakana ≥ 2 | 日本語 — distinguished from Chinese by kana presence |
+| `ko`      | Hangul ≥ 2            | 한국어                                               |
 
-### 4. Session Language-Aware Localization / 会话语言感知本地化
-
-OAG notes and heartbeat prompts are localized based on the session's recent reply language. Language detection scans the session transcript for the most recent user message and applies a conservative heuristic.
-
-OAG 通知和心跳提示根据会话最近的回复语言进行本地化。语言检测扫描会话转录中最近的用户消息，应用保守的启发式算法。
-
-**Supported languages / 支持的语言：**
-
-- `zh-Hans` — Simplified Chinese (detected when ≥2 Han characters and Han count ≥ Latin count / 2) / 简体中文（当汉字 ≥2 且汉字数 ≥ 拉丁字数/2 时检测）
-- `en` — English (detected when ≥6 Latin characters and 0 Han characters) / 英文（当拉丁字符 ≥6 且汉字为 0 时检测）
-- When detection fails, defaults to English translations / 检测失败时默认使用英文翻译
-
-**Source:** `src/infra/session-language.ts`
+OAG notes and heartbeat prompts are localized to the detected language. / OAG 通知和心跳按检测到的语言本地化。
 
 ### 5. Channel Health Policy / 频道健康策略
 
-The health monitor evaluates channel status on a configurable interval and restarts unhealthy channels automatically.
+| Reason         | Meaning                                                         |
+| -------------- | --------------------------------------------------------------- |
+| `healthy`      | Operating normally / 正常运行                                   |
+| `busy`         | Active runs / 有活跃运行                                        |
+| `disconnected` | WebSocket disconnected / 断开                                   |
+| `stale-socket` | No events within 30 min threshold / 30 分钟无事件               |
+| `stale-poll`   | Telegram/webhook: no inbound within 60 min / 轮询 60 分钟无入站 |
+| `stuck`        | Busy but run activity stale / 忙碌但活动过期                    |
 
-健康监控器按可配置的间隔评估频道状态，自动重启不健康的频道。
+Auto-restart with exponential backoff (5s → 5min), max 10 attempts. / 指数退避自动重启，最多 10 次。
 
-**Evaluation reasons / 评估原因：**
+### 6. Structured Metrics / 结构化指标
 
-| Reason                  | Meaning                                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `healthy`               | Channel is operating normally / 频道正常运行                                                                     |
-| `busy`                  | Channel has active runs / 频道有活跃运行                                                                         |
-| `disconnected`          | WebSocket reports disconnected / WebSocket 报告断开                                                              |
-| `stale-socket`          | WebSocket connected but no events received within threshold / WebSocket 已连接但在阈值内未收到事件               |
-| `stale-poll`            | Polling/webhook channel has not received inbound data within threshold / 轮询/webhook 频道在阈值内未收到入站数据 |
-| `stuck`                 | Channel is busy but run activity is stale / 频道忙碌但运行活动已过期                                             |
-| `startup-connect-grace` | Channel just started, within grace period / 频道刚启动，在宽限期内                                               |
+9 counters exposed via `/health` endpoint: / 9 个计数器通过 `/health` 端点暴露：
 
-**Key thresholds / 关键阈值：**
+| Counter                    | Callsite                                            |
+| -------------------------- | --------------------------------------------------- |
+| `channelRestarts`          | Health monitor triggered restart / 健康监控触发重启 |
+| `deliveryRecoveries`       | Successful delivery recovery / 投递恢复成功         |
+| `deliveryRecoveryFailures` | Failed delivery recovery / 投递恢复失败             |
+| `staleSocketDetections`    | WebSocket stale detection / WebSocket 过期检测      |
+| `stalePollDetections`      | Polling stale detection / 轮询过期检测              |
+| `noteDeliveries`           | OAG notes delivered / 通知投递                      |
+| `noteDeduplications`       | Duplicate notes suppressed / 通知去重抑制           |
+| `lockAcquisitions`         | Lock acquired / 锁获取                              |
+| `lockStalRecoveries`       | Stale lock recovered / 过期锁回收                   |
 
-- Stale socket threshold: 30 minutes / 过期 socket 阈值：30 分钟
-- Stale poll threshold: 60 minutes (2x socket threshold) / 过期轮询阈值：60 分钟（socket 阈值的 2 倍）
-- Startup connect grace: 2 minutes / 启动连接宽限：2 分钟
-- Max restarts per hour: 10 / 每小时最大重启次数：10
+### 7. Configurable Parameters / 可配置参数
 
-**Source:** `src/gateway/channel-health-policy.ts`, `src/gateway/channel-health-monitor.ts`
+All OAG constants are tunable via `gateway.oag.*` config: / 所有 OAG 常量可通过配置调整：
 
-### 6. Channel Lifecycle Management / 频道生命周期管理
+| Parameter                   | Default | Description                                |
+| --------------------------- | ------- | ------------------------------------------ |
+| `delivery.maxRetries`       | 5       | Max delivery retry attempts / 最大投递重试 |
+| `delivery.recoveryBudgetMs` | 60000   | Recovery time budget / 恢复时间预算        |
+| `lock.timeoutMs`            | 2000    | Lock acquire timeout / 锁获取超时          |
+| `lock.staleMs`              | 30000   | Stale lock threshold / 锁过期阈值          |
+| `health.stalePollFactor`    | 2       | Poll stale multiplier / 轮询过期倍数       |
+| `notes.dedupWindowMs`       | 60000   | Note dedup window (0=disable) / 去重窗口   |
+| `notes.maxDeliveredHistory` | 20      | Audit trail cap / 审计上限                 |
 
-The channel manager handles start, stop, crash-loop backoff, and recovery hook dispatch for all channel accounts.
+Changes take effect at runtime without restart. / 修改后运行时即时生效，无需重启。
 
-频道管理器处理所有频道账户的启动、停止、崩溃循环退避和恢复钩子分发。
+### 8. Schema Versioning / Schema 版本化
 
-**Key behaviors / 关键行为：**
+- **v1** (default): Dual snake_case/camelCase naming for backward compatibility / 双命名兼容
+- **v2**: Strict snake_case only, detected via `schema_version: 2` field / 严格蛇形命名
 
-- Auto-restart with exponential backoff (5s → 5min, factor 2, jitter 0.1) / 指数退避自动重启（5 秒 → 5 分钟，因子 2，抖动 0.1）
-- Max 10 restart attempts before giving up / 放弃前最多 10 次重启尝试
-- Manual stop prevents auto-restart / 手动停止阻止自动重启
-- `running=false` and `restartPending` are set atomically to prevent observer TOCTOU / `running=false` 和 `restartPending` 原子设置，防止观察者 TOCTOU
-- Recovery hook fires on reconnect or operational transition / 恢复钩子在重连或可用状态转换时触发
+---
 
-**Source:** `src/gateway/server-channels.ts`
+## Self-Evolution System / 自进化系统
+
+OAG learns from crashes and automatically improves its own parameters across gateway restarts.
+
+OAG 从崩溃中学习，跨 gateway 重启自动改进自身参数。
+
+### How it works / 工作原理
+
+```
+Gateway crashes / channels fail
+    │
+    ├── Incident collector records events in memory
+    │
+    ▼
+Gateway shuts down
+    │
+    ├── Lifecycle snapshot → oag-memory.json
+    │   (metrics + incidents + stop reason)
+    │
+    ▼
+Gateway restarts
+    │
+    ├── Load crash history from oag-memory.json
+    │
+    ├── Wait for idle window (no user messages queued)
+    │
+    ├── Post-recovery analysis scans crash patterns
+    │   ├── Recurring crash loop → increase recovery budget
+    │   ├── Delivery failures → increase retry limit
+    │   ├── Stale false positives → relax threshold
+    │   └── Lock contention → increase stale timeout
+    │
+    ├── Low-risk changes → auto-apply to config
+    │
+    ├── Start 1-hour rollback observation window
+    │   ├── Regression detected → auto-revert config
+    │   └── No regression → mark "effective"
+    │
+    ├── Inject OAG notification to user
+    │   "OAG: I analyzed 4 recent incidents and adjusted recovery parameters."
+    │
+    └── User perceives: system is more stable
+```
+
+### Safety Rails / 安全护栏
+
+| Rail                    | Value                    | Description                                               |
+| ----------------------- | ------------------------ | --------------------------------------------------------- |
+| Max step                | 50%                      | Single adjustment capped at 50% change / 单次调整上限 50% |
+| Max cumulative          | 200%                     | Total drift from original value / 累计偏移上限 200%       |
+| Cooldown                | 4 hours                  | Minimum gap between evolutions / 进化间隔至少 4 小时      |
+| Observation window      | 1 hour                   | Regression check period after apply / 应用后回归检测期    |
+| Rollback trigger        | 5 restarts or 3 failures | Auto-revert threshold / 自动回滚阈值                      |
+| Observation persistence | Survives restarts        | Stored in oag-memory.json / 跨重启持久化                  |
+
+### Agent-Assisted Diagnosis / Agent 辅助诊断
+
+When heuristic analysis is insufficient, OAG can escalate to AI agent diagnosis: / 当启发式分析不够时，OAG 可升级到 AI agent 诊断：
+
+- Structured prompt composed from crash history + metrics + config / 从崩溃历史+指标+配置构建结构化 prompt
+- JSON response parsing with markdown extraction / JSON 响应解析（含 markdown 提取）
+- Low-risk recommendations auto-applied / 低风险建议自动应用
+- 4-hour cooldown per trigger type / 每种触发类型 4 小时冷却
+- Fully invisible to users / 对用户完全不可见
 
 ---
 
 ## Architecture / 架构
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Sentinel Pipeline                  │
-│  (produces ~/.openclaw/sentinel/channel-health-      │
-│   state.json with backlog, session, task watch)      │
-└──────────────────────┬──────────────────────────────┘
-                       │ reads
+┌──────────────────────────────────────────────────────────┐
+│                    Sentinel Pipeline                      │
+│  (produces ~/.openclaw/sentinel/channel-health-state.json)│
+└──────────────────────┬───────────────────────────────────┘
+                       │
                        ▼
-┌─────────────────────────────────────────────────────┐
-│                    OAG Runtime                        │
-│                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
-│  │ CLI Surfaces  │  │ System Notes │  │  Recovery   │ │
-│  │ status/health │  │ one-shot     │  │  replay     │ │
-│  │ /doctor       │  │ per-session  │  │  per-channel│ │
-│  └──────────────┘  └──────────────┘  └────────────┘ │
-│                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
-│  │ Health Policy │  │  Language    │  │  Channel   │ │
-│  │ stale-socket  │  │  Detection  │  │  Lifecycle │ │
-│  │ stale-poll    │  │  zh-Hans/en │  │  Manager   │ │
-│  └──────────────┘  └──────────────┘  └────────────┘ │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      OAG Runtime                          │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ CLI Surfaces │  │ System Notes │  │ Delivery       │  │
+│  │ status/health│  │ one-shot     │  │ Recovery +     │  │
+│  │ /doctor      │  │ localized    │  │ Indexed Queue  │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Health      │  │ Language     │  │ Channel        │  │
+│  │ Policy      │  │ Detection    │  │ Lifecycle      │  │
+│  │ socket+poll │  │ zh/en/ja/ko  │  │ Manager        │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Metrics     │  │ Config       │  │ Schema         │  │
+│  │ 9 counters  │  │ 7 params     │  │ v1/v2          │  │
+│  │ /health API │  │ hot-reload   │  │ versioning     │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│                  Self-Evolution Engine                     │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Persistent  │  │ Post-Recovery│  │ Config         │  │
+│  │ Memory      │  │ Analysis     │  │ Write-Back     │  │
+│  │ 30-day      │  │ heuristic    │  │ atomic merge   │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Incident    │  │ Evolution    │  │ Idle           │  │
+│  │ Collector   │  │ Rollback     │  │ Scheduler      │  │
+│  │ runtime     │  │ Guard        │  │ non-blocking   │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Agent       │  │ Evolution    │  │ Event          │  │
+│  │ Diagnosis   │  │ Notification │  │ Bus            │  │
+│  │ AI-powered  │  │ user-facing  │  │ fs.watch       │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
-
----
-
-## State File / 状态文件
-
-All OAG runtime state is read from:
-
-所有 OAG 运行时状态从以下文件读取：
-
-```
-~/.openclaw/sentinel/channel-health-state.json
-```
-
-This file is produced by the sentinel/watch pipeline and consumed by OAG. It uses snake_case field names (e.g., `affected_channels`, `pending_user_notes`, `session_watch`).
-
-该文件由 sentinel/watch 流水线生成，由 OAG 消费。使用蛇形命名（如 `affected_channels`、`pending_user_notes`、`session_watch`）。
 
 ---
 
 ## Key Files / 关键文件
 
-| File                                      | Purpose                                                               |
-| ----------------------------------------- | --------------------------------------------------------------------- |
-| `src/commands/oag-channel-health.ts`      | State parsing, summary formatting / 状态解析、摘要格式化              |
-| `src/infra/oag-system-events.ts`          | One-shot note consumption with file lock / 一次性通知消费（含文件锁） |
-| `src/infra/session-language.ts`           | Session reply language detection / 会话回复语言检测                   |
-| `src/infra/heartbeat-runner.ts`           | Heartbeat with language-aware prompts / 语言感知心跳                  |
-| `src/gateway/server-channels.ts`          | Channel lifecycle and recovery hooks / 频道生命周期和恢复钩子         |
-| `src/gateway/server.impl.ts`              | Gateway wiring and delivery recovery / Gateway 编排和投递恢复         |
-| `src/gateway/channel-health-policy.ts`    | Health evaluation (socket + poll) / 健康评估（socket + 轮询）         |
-| `src/gateway/channel-health-monitor.ts`   | Background health check loop / 后台健康检查循环                       |
-| `src/auto-reply/reply/session-updates.ts` | System event drain into replies / 系统事件排空到回复                  |
-| `src/infra/outbound/delivery-queue.ts`    | Crash-safe delivery queue / 崩溃安全投递队列                          |
+### Core Runtime / 核心运行时
+
+| File                                    | Purpose                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| `src/commands/oag-channel-health.ts`    | State parsing + formatting with schema versioning / 状态解析（含 schema 版本化） |
+| `src/infra/oag-system-events.ts`        | Note consumption with atomic lock + deduplication / 通知消费（原子锁 + 去重）    |
+| `src/infra/session-language.ts`         | Language detection (zh/en/ja/ko) / 语言检测                                      |
+| `src/gateway/server-channels.ts`        | Channel lifecycle + recovery hooks / 频道生命周期 + 恢复钩子                     |
+| `src/gateway/server.impl.ts`            | Gateway orchestration / Gateway 编排                                             |
+| `src/gateway/channel-health-policy.ts`  | Health evaluation (socket + poll) / 健康评估                                     |
+| `src/gateway/channel-health-monitor.ts` | Background health loop + metrics / 后台健康循环 + 指标                           |
+
+### Infrastructure / 基础设施
+
+| File                                   | Purpose                                           |
+| -------------------------------------- | ------------------------------------------------- |
+| `src/infra/oag-metrics.ts`             | 9 metric counters + `/health` endpoint / 指标收集 |
+| `src/infra/oag-config.ts`              | 7 config resolvers with defaults / 配置解析器     |
+| `src/config/types.oag.ts`              | OAG config type definition / 配置类型定义         |
+| `src/infra/oag-config-writer.ts`       | Atomic config write-back / 原子配置写回           |
+| `src/infra/outbound/delivery-queue.ts` | Crash-safe delivery queue / 崩溃安全投递队列      |
+| `src/infra/outbound/delivery-index.ts` | JSON index for fast lookups / JSON 索引           |
+| `src/infra/oag-event-bus.ts`           | EventEmitter bus + fs.watch / 事件总线            |
+
+### Self-Evolution / 自进化
+
+| File                                  | Purpose                                                    |
+| ------------------------------------- | ---------------------------------------------------------- |
+| `src/infra/oag-memory.ts`             | Persistent lifecycle/incident/evolution storage / 持久记忆 |
+| `src/infra/oag-incident-collector.ts` | Runtime incident aggregation / 运行时事件采集              |
+| `src/infra/oag-postmortem.ts`         | Post-recovery pattern analysis / 事后分析引擎              |
+| `src/infra/oag-evolution-guard.ts`    | Rollback observation + regression detection / 回滚守卫     |
+| `src/infra/oag-evolution-notify.ts`   | Evolution notification injection / 进化通知注入            |
+| `src/infra/oag-diagnosis.ts`          | Agent-assisted diagnosis prompts / Agent 诊断              |
+| `src/infra/oag-scheduler.ts`          | Idle-window task scheduler / 空闲调度器                    |
+
+---
+
+## Test Coverage / 测试覆盖
+
+| Test File                           | Tests   |
+| ----------------------------------- | ------- |
+| `oag-channel-health.test.ts`        | 25      |
+| `oag-system-events.test.ts`         | 14      |
+| `channel-health-policy.test.ts`     | 22      |
+| `session-language.test.ts`          | 8       |
+| `oag-metrics.test.ts`               | 6       |
+| `oag-config.test.ts`                | 5       |
+| `oag-config-writer.test.ts`         | 4       |
+| `oag-memory.test.ts`                | 6       |
+| `oag-postmortem.test.ts`            | 4       |
+| `oag-incident-collector.test.ts`    | 4       |
+| `oag-evolution-guard.test.ts`       | 6       |
+| `oag-evolution-notify.test.ts`      | 4       |
+| `oag-diagnosis.test.ts`             | 6       |
+| `oag-scheduler.test.ts`             | 6       |
+| `oag-event-bus.test.ts`             | 5       |
+| `oag-evolution.integration.test.ts` | 3       |
+| `server-channels.test.ts`           | 5       |
+| `delivery-index.test.ts`            | 5       |
+| `outbound.test.ts`                  | 66      |
+| **Total**                           | **204** |
 
 ---
 
 ## Troubleshooting / 故障排查
 
-1. Run `openclaw status` for a quick local readout / 运行 `openclaw status` 快速查看本地状态
-2. If OAG lines are not `clear`, run `openclaw health --json` to inspect the live Gateway snapshot / 如果 OAG 行不是 `clear`，运行 `openclaw health --json` 查看实时 Gateway 快照
-3. Open `~/.openclaw/sentinel/channel-health-state.json` and confirm the tracked entries match the failing path / 打开状态文件确认跟踪条目与故障路径匹配
-4. If `OAG channels` reports prolonged backlog after recovery, restart the Gateway / 如果 `OAG channels` 报告恢复后积压持续，重启 Gateway
-5. If `OAG sessions` stays blocked by runtime/model errors, inspect the affected session transcript / 如果 `OAG sessions` 持续被运行时/模型错误阻塞，检查受影响的会话转录
-
----
-
-## Recent Fixes (Code Review) / 近期修复（代码审查）
-
-The following issues were identified during code review and fixed in this branch:
-
-以下问题在代码审查中发现并在此分支修复：
-
-| #   | Fix                                                                                                                                                                     | Severity    |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| 1   | `readOptionalString` returning `undefined` caused `.length` crash in session key parsing / `readOptionalString` 返回 `undefined` 导致 session key 解析崩溃              | High / 高   |
-| 2   | Multiple consumed notes were silently discarded — only the latest was shown / 多条消费的通知被静默丢弃，只展示最新的                                                    | Medium / 中 |
-| 3   | Stale file lock after process crash permanently blocked note delivery / 进程崩溃后的过期文件锁永久阻塞通知投递                                                          | Medium / 中 |
-| 4   | Rapid channel disconnect/reconnect skipped recovery replay / 频道快速断开/重连跳过恢复重放                                                                              | Medium / 中 |
-| 5   | `undefined` language fell back to raw producer message instead of English / `undefined` 语言回退到原始生产者消息而非英文                                                | Low / 低    |
-| 6   | TOCTOU between `running=false` and `restartPending=true` in channel restart / 频道重启中 `running=false` 和 `restartPending=true` 之间的 TOCTOU                         | Low / 低    |
-| 7   | Telegram/webhook channels had no staleness detection — added `stale-poll` via `lastInboundAt` / Telegram/webhook 频道无过期检测——通过 `lastInboundAt` 新增 `stale-poll` | Low / 低    |
+1. `openclaw status` — quick local readout / 快速本地状态
+2. `openclaw health --json` — live snapshot with `oagMetrics` / 实时快照含指标
+3. Check `~/.openclaw/sentinel/channel-health-state.json` — raw state / 原始状态
+4. Check `~/.openclaw/sentinel/oag-memory.json` — evolution history / 进化历史
+5. View evolutions: `cat ~/.openclaw/sentinel/oag-memory.json | jq .evolutions`
+6. View diagnoses: `cat ~/.openclaw/sentinel/oag-memory.json | jq .diagnoses`
+7. Manual config override: `openclaw config set gateway.oag.delivery.recoveryBudgetMs 120000`
 
 ---
 
 ## Development / 开发
 
 ```bash
-# Install dependencies / 安装依赖
-pnpm install
+pnpm install                  # Install dependencies / 安装依赖
+pnpm tsgo                     # Type check / 类型检查
+pnpm test                     # Run all tests / 运行所有测试
 
-# Type check / 类型检查
-pnpm tsgo
-
-# Run tests / 运行测试
-pnpm test
-
-# Run OAG-related tests / 运行 OAG 相关测试
-pnpm test -- --run src/gateway/server-channels.test.ts src/gateway/channel-health-policy.test.ts
+# Run OAG tests only / 仅运行 OAG 测试
+pnpm test -- --run \
+  src/infra/oag-system-events.test.ts \
+  src/infra/oag-memory.test.ts \
+  src/infra/oag-postmortem.test.ts \
+  src/infra/oag-evolution-guard.test.ts \
+  src/infra/oag-evolution.integration.test.ts \
+  src/commands/oag-channel-health.test.ts \
+  src/gateway/channel-health-policy.test.ts
 ```
 
 ---
