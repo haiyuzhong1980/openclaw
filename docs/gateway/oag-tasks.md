@@ -1,144 +1,219 @@
 # OAG Improvement Task List
 
-> Generated: 2026-03-16
+> Updated: 2026-03-17
 > Branch: `codex/argus-private-recovery`
-> Owner: Henry (review/approve) + Codex agents (execute)
+> Owner: Henry (review/approve) + Claude/Codex agents (execute)
 
 ---
 
-## P0 — Must-do before merge
+## Completed Milestones
 
-### P0-1: Unit tests for `oag-channel-health.ts`
+### P0 — Code review fixes + core tests — ✅ CLOSED (65 tests)
 
-- **File:** `src/commands/oag-channel-health.test.ts` (new)
-- **Scope:**
-  - `readOagChannelHealthSummary`: valid JSON, missing fields, wrong types, mixed snake/camel naming, empty file, malformed JSON
-  - `formatOagChannelHealthLine`: all 4 state branches (congested, escalation, backlog, clear)
-  - `formatOagSessionWatchLine`: active, escalation, cleared, unavailable
-  - `formatOagTaskWatchLine`: terminal stuck, normal follow-up, empty, clear
-- **Acceptance:** All tests pass, covers the undefined crash fix from review finding #1
-- **Status:** [x] Done — 22 tests passed (Codex agent, verified by total run)
+- [x] P0-1: Unit tests for `oag-channel-health.ts` (22 tests)
+- [x] P0-2: Unit tests for `oag-system-events.ts` (11 tests + 3 lock tests)
+- [x] P0-3: Unit tests for `session-language.ts` (5 tests)
+- [x] P0-4: Confirm sentinel schema (verified: `counts` correct, camelCase in production)
+- [x] P0-5: stale-poll tests for `channel-health-policy.ts` (6 tests)
 
-### P0-2: Unit tests for `oag-system-events.ts`
+### P1 — Language detection + note dedup — ✅ CLOSED (71 tests)
 
-- **File:** `src/infra/oag-system-events.test.ts` (new)
-- **Scope:**
-  - `noteMatchesSession`: exact match, case-insensitive, `sessionKeys` vs `session_keys` dual naming, no targets, empty sessionKey
-  - `consumePendingOagSystemNotes`: single note, multiple notes all returned, no match returns empty, consumed notes move to delivered, delivered list capped at MAX_DELIVERED_NOTES
-  - `resolveLocalizedOagMessage`: zh-Hans returns fallback, en returns hardcoded, undefined defaults to en
-  - `normalizeNoteMessage`: truncation at 96 chars, whitespace collapse, empty
-  - Lock behavior: basic acquire/release (mock fs)
-- **Acceptance:** All tests pass, covers review findings #2 #3 #5
-- **Status:** [x] Done — 8 tests passed (Codex agent, verified by total run)
+- [x] P1-7: Extend language detection (ja, ko) — 3 new tests
+- [x] P1-8: OAG note deduplication — 3 new tests
 
-### P0-3: Unit tests for `session-language.ts`
+### P2 — Atomic lock + metrics + config — ✅ CLOSED (148 tests)
 
-- **File:** `src/infra/session-language.test.ts` (new)
-- **Scope:**
-  - `detectSessionReplyLanguageFromText`: pure Chinese -> zh-Hans, pure English -> en, mixed content thresholds, empty/whitespace -> undefined, short text -> undefined
-  - Edge cases: URLs with Latin chars in Chinese text, numbers only, emoji only
-- **Acceptance:** All tests pass
-- **Status:** [x] Done — 5 tests passed (Codex agent, verified by total run)
+- [x] P2-4: Atomic file lock (`fs.open("wx")` + PID stale recovery)
+- [x] P2-6: OAG metrics collector (9 counters, /health endpoint)
+- [x] P2-11: OAG config consolidation (7 resolvers, types.oag.ts)
+- [x] P2-closeout: Wire config into source files + metrics callsites + health endpoint
 
-### P0-4: Confirm sentinel schema for `taskWatch.counts`
+### P3-10 — Schema versioning — ✅ CLOSED (165 tests)
 
-- **File:** `src/commands/oag-channel-health.ts` (potential fix)
-- **Scope:**
-  - Read a real `~/.openclaw/sentinel/channel-health-state.json` snapshot
-  - Check if task_watch section uses `counts`, `task_counts`, or `state_counts`
-  - If mismatch found, add fallback reading (like session_keys/sessionKeys pattern)
-- **Acceptance:** Field name confirmed or fallback added
-- **Status:** [x] Done — Confirmed `counts` is correct (camelCase in production). `affected_targets` uses camelCase (`accountId`, `sessionKeys`). No code change needed.
+- [x] P3-10: Sentinel schema versioning (v1 dual-naming / v2 strict snake_case)
 
-### P0-5: Unit tests for `stale-poll` in `channel-health-policy.test.ts`
+### Evolution Foundation — ✅ CLOSED (165 tests)
 
-- **File:** `src/gateway/channel-health-policy.test.ts` (extend existing)
-- **Scope:**
-  - Telegram channel with stale `lastInboundAt` -> `stale-poll`
-  - Telegram channel with fresh `lastInboundAt` -> `healthy`
-  - Webhook mode with stale `lastInboundAt` -> `stale-poll`
-  - Polling channel with no `lastInboundAt` -> `healthy` (no false positive)
-  - Verify 2x threshold factor (60 min vs 30 min)
-  - `resolveChannelRestartReason` returns `"stale-poll"` for stale-poll evaluation
-- **Acceptance:** All new tests pass alongside existing 16 tests
-- **Status:** [x] Done — 6 new tests, 22 total passed (Codex agent, verified by total run)
+- [x] EV-1: Persistent memory (`oag-memory.ts`) — 6 tests
+- [x] EV-2: Post-recovery analysis engine (`oag-postmortem.ts`) — 4 tests
+- [x] EV-3: Incident collector (`oag-incident-collector.ts`) — 4 tests
+- [x] EV-4: Lifecycle wiring (shutdown snapshot + startup postmortem + incident recording)
 
 ---
 
-## P1 — Short-term improvements
+## Next: Phase 5 — Evolution Completion + Architecture
 
-### P1-7: Extend language detection (ja, ko)
+### EV-5: Config write-back for evolution recommendations
 
-- **File:** `src/infra/session-language.ts` (modify) + `src/infra/session-language.test.ts` (extend)
+- **Files:** `src/infra/oag-postmortem.ts` (modify), `src/config/config.ts` (use writeConfigFile)
 - **Scope:**
-  - Add `ja` detection via Hiragana/Katakana ranges (U+3040-309F, U+30A0-30FF)
-  - Add `ko` detection via Hangul range (U+AC00-D7AF, U+1100-11FF)
-  - Conservative thresholds matching existing zh-Hans pattern
-  - Update `SessionReplyLanguage` type to include `"ja"` and `"ko"`
-  - Add localization fallback in `resolveLocalizedOagMessage` for ja/ko (use English hardcoded)
-  - Add tests for pure Japanese, pure Korean, mixed content, edge cases
-- **Acceptance:** Tests pass, existing zh-Hans/en tests unbroken
-- **Status:** [ ] In progress
-
-### P1-8: OAG note deduplication
-
-- **File:** `src/infra/oag-system-events.ts` (modify) + `src/infra/oag-system-events.test.ts` (extend)
-- **Scope:**
-  - Before returning consumed notes, deduplicate by `action` within a 60-second window
-  - Keep the most recent note per action group
-  - Ensure dedup only affects the return value, not the delivered_user_notes audit trail
-  - Add tests: duplicate actions within window collapsed, different actions preserved, outside window preserved
-- **Acceptance:** Tests pass, existing tests unbroken
-- **Status:** [ ] In progress
-
----
-
-## P2 — Medium-term improvements
-
-### P2-4: Harden file lock with atomic open
-
-- **File:** `src/infra/oag-system-events.ts` (modify) + `src/infra/oag-system-events.test.ts` (extend)
-- **Scope:**
-  - Replace mkdir-based lock with `fs.open` using `O_CREAT | O_EXCL | O_WRONLY` for true atomic lock file
-  - Write PID + timestamp into the lock file (not a directory)
-  - Stale detection: read PID from lock file, check process alive + age
-  - No new npm dependency needed
-- **Acceptance:** Tests pass, lock mechanism more robust
+  - After `runPostRecoveryAnalysis` produces low-risk `applied` recommendations, actually write the adjusted values to `~/.openclaw/config.json` via `writeConfigFile`
+  - Merge changes into existing `gateway.oag` section without overwriting unrelated config
+  - Trigger config hot-reload so changes take effect without restart
+  - Add a `dryRun` option (default: false in production, true in tests)
+  - Log all applied changes with before/after values
+- **Tests:**
+  - Config file written with correct merged values
+  - Existing non-OAG config preserved
+  - dryRun mode does not write
+  - Invalid/missing config file handled gracefully
+- **Acceptance:** Evolution recommendations actually persist across restarts
 - **Status:** [ ] Not started
 
-### P2-6: OAG health metrics collector
+### EV-6: Auto-rollback on regression
 
-- **File:** `src/infra/oag-metrics.ts` (new) + `src/infra/oag-metrics.test.ts` (new)
+- **Files:** `src/infra/oag-evolution-guard.ts` (new), `src/infra/oag-postmortem.ts` (modify)
 - **Scope:**
-  - Create `OagMetrics` collector with counters: channel_restarts, delivery_recoveries, stale_detections, note_deliveries
-  - Expose `getOagMetrics()` for JSON endpoint consumption
-  - Wire into channel recovery hook and health monitor
-  - Add tests for counter increments
-- **Acceptance:** Tests pass, metrics accessible via gateway health endpoint
+  - After applying an evolution, start a 1-hour observation window
+  - Track key regression signals: crash count, recovery failure rate, stale detection rate
+  - If regression detected (metrics worse than pre-evolution baseline), automatically:
+    1. Revert config to pre-evolution values via writeConfigFile
+    2. Record `outcome: "reverted"` in evolution record
+    3. Log the rollback with reason
+  - If observation window passes without regression, record `outcome: "effective"`
+  - Persist observation state in oag-memory.json (survives restarts mid-observation)
+- **Tests:**
+  - Regression detected → config reverted + evolution marked "reverted"
+  - No regression → evolution marked "effective"
+  - Observation survives gateway restart
+  - Multiple evolutions queued during observation are blocked (cooldown)
+- **Acceptance:** Bad parameter changes are automatically undone within 1 hour
 - **Status:** [ ] Not started
 
-### P2-11: Consolidate OAG config into gateway.oag section
+### EV-7: Evolution notification as OAG user note
 
-- **File:** `src/config/config.ts` (extend type), `src/infra/oag-system-events.ts` + `src/gateway/channel-health-policy.ts` + `src/infra/outbound/delivery-queue.ts` (read config)
+- **Files:** `src/infra/oag-postmortem.ts` (modify), `src/infra/oag-system-events.ts` (use existing pending_user_notes)
 - **Scope:**
-  - Define `gateway.oag` config type with: delivery.maxRetries, delivery.recoveryBudgetMs, lock.timeoutMs, lock.staleMs, health.stalePollFactor
-  - Replace hardcoded constants with config reads (fallback to current defaults)
-  - Add tests for config override behavior
-- **Acceptance:** Tests pass, defaults unchanged, config overrides work
+  - When postmortem produces a `userNotification`, inject it as a pending OAG note into `channel-health-state.json`
+  - Target: the main session (or all active sessions if no main session)
+  - Use action `"oag_evolution"` so it can be localized later
+  - Note text example: "OAG: I analyzed 4 recent incidents and adjusted the recovery budget to reduce channel disruption."
+  - Only inject once per evolution (use evolution record ID as dedup key)
+- **Tests:**
+  - Notification injected into pending_user_notes after evolution
+  - Dedup prevents duplicate notifications for same evolution
+  - No notification when no changes applied
+- **Acceptance:** Users see a one-shot notification after OAG self-improves
+- **Status:** [ ] Not started
+
+### EV-8: Agent-assisted diagnosis (Layer 4)
+
+- **Files:** `src/infra/oag-diagnosis.ts` (new), `src/infra/oag-diagnosis.test.ts` (new)
+- **Scope:**
+  - Trigger conditions: recurring pattern that heuristic postmortem cannot resolve (≥3 occurrences, postmortem ran but produced no effective recommendation)
+  - Compose structured diagnosis prompt with:
+    - Recent lifecycle history (last 5 from oag-memory)
+    - Current metrics snapshot
+    - Current OAG config
+    - Recent error log tail (last 50 lines from gateway log)
+    - Previous evolution records
+  - Dispatch diagnosis via internal agent session:
+    - Use dedicated agent ID `oag` or session prefix `oag:diagnosis:`
+    - Use haiku model (fast, cheap, sufficient for structured analysis)
+    - Set `skipOutboundDelivery: true` — user sees nothing
+    - Set `skipSessionStore: true` — not visible in session list
+  - Parse structured JSON response from agent
+  - Store diagnosis in oag-memory.json
+  - Low-risk config_change recommendations → auto-apply (same path as EV-5)
+  - Medium/high risk → log only, notify operator via OAG note
+  - Rate limit: max 1 diagnosis per 4 hours per pattern type
+- **Tests:**
+  - Prompt includes all required context sections
+  - JSON response parsed correctly
+  - Low-risk recommendation applied
+  - High-risk recommendation logged but not applied
+  - Rate limit enforced
+  - Agent session is invisible (no channel delivery, no session store entry)
+- **Acceptance:** Agent analyzes root causes silently, user only sees "OAG improved X"
+- **Status:** [ ] Not started
+
+### EV-9: Idle-window scheduling for evolution tasks
+
+- **Files:** `src/infra/oag-scheduler.ts` (new)
+- **Scope:**
+  - Evolution tasks (postmortem, diagnosis) should only run when gateway is idle
+  - Check: `getTotalQueueSize() === 0 && getTotalPendingReplies() === 0 && getActiveEmbeddedRunCount() === 0`
+  - If not idle, defer with exponential backoff (5s, 10s, 20s, max 60s)
+  - Max wait before giving up: 5 minutes (run anyway if never idle)
+  - Wire into postmortem startup path (replace current immediate `void` dispatch)
+- **Tests:**
+  - Runs immediately when idle
+  - Defers when queue has items
+  - Gives up and runs after max wait
+- **Acceptance:** Evolution never delays user message processing
 - **Status:** [ ] Not started
 
 ---
-
-## P3 — Long-term architecture
 
 ### P3-5: Migrate delivery queue to SQLite
 
+- **Files:** `src/infra/outbound/delivery-queue.ts` (rewrite), `src/infra/outbound/delivery-queue.test.ts` (new)
+- **Scope:**
+  - Replace filesystem directory queue with SQLite database (better-sqlite3)
+  - Schema: `CREATE TABLE deliveries (id TEXT PRIMARY KEY, channel TEXT, account_id TEXT, to_addr TEXT, payload JSON, retry_count INT, enqueued_at INT, last_attempt_at INT, last_error TEXT, lane_priority TEXT, status TEXT DEFAULT 'pending')`
+  - Index: `CREATE INDEX idx_channel_account ON deliveries (channel, account_id, status)`
+  - Replace `loadPendingDeliveries` full-dir scan with `SELECT WHERE status='pending' AND channel=? AND account_id=?`
+  - Replace atomic rename two-phase with SQL transaction
+  - Replace `moveToFailed` with `UPDATE status='failed'`
+  - Migration: on first run, scan existing `.json` files and import into SQLite, then remove
+  - Keep `enqueueDelivery` / `ackDelivery` / `failDelivery` API signatures unchanged
+- **Tests:**
+  - Enqueue + ack round-trip
+  - Enqueue + fail + retry
+  - Filter by channel:account
+  - Migration from filesystem queue
+  - Concurrent enqueue/ack safety
+- **Acceptance:** All existing outbound.test.ts tests pass with new backend
+- **Dependencies:** better-sqlite3 npm package (check if already in repo deps)
 - **Status:** [ ] Not started
 
 ### P3-9: Event-driven OAG (replace file polling)
 
+- **Files:** `src/infra/oag-event-bus.ts` (new), sentinel pipeline (external)
+- **Scope:**
+  - Define OAG event types: `channel_state_changed`, `session_watch_update`, `task_watch_update`, `user_note_pending`
+  - Create in-process EventEmitter-based bus for gateway-internal events
+  - For sentinel → OAG communication: use fs.watch on `channel-health-state.json` + debounce (50ms)
+  - Replace pull-based `readOagChannelHealthSummary()` in status commands with cached snapshot updated by events
+  - Replace pull-based `consumePendingOagSystemNotes()` with event-triggered consumption
+  - Keep file-based path as fallback when event bus is unavailable
+- **Tests:**
+  - Event emission on file change
+  - Debounce prevents rapid-fire processing
+  - Cached snapshot consistency
+  - Fallback to file read when bus unavailable
+- **Acceptance:** Status commands respond from cache (sub-ms), notes delivered within 50ms of file write
 - **Status:** [ ] Not started
 
-### P3-10: Sentinel schema versioning
+---
 
-- **Status:** [ ] Not started
+## Task Dependencies
+
+```
+EV-5 (config write-back) ← required by EV-6, EV-8
+EV-6 (auto-rollback) ← requires EV-5
+EV-7 (user notification) ← independent, can run in parallel with EV-5/6
+EV-8 (agent diagnosis) ← requires EV-5; optional dep on EV-9
+EV-9 (idle scheduling) ← independent, can run in parallel
+
+P3-5 (SQLite queue) ← independent of evolution work
+P3-9 (event-driven) ← independent, but benefits from EV pipeline being stable
+```
+
+## Suggested Execution Order
+
+```
+Wave 1 (parallel):  EV-5 + EV-7 + EV-9
+Wave 2 (parallel):  EV-6 + EV-8 (after EV-5 done)
+Wave 3:             P3-5 (SQLite)
+Wave 4:             P3-9 (event-driven)
+```
+
+## Priority Legend
+
+| Priority | Meaning                  | Timeline |
+| -------- | ------------------------ | -------- |
+| EV-5/6/7 | Evolution must-have      | 1-2 days |
+| EV-8/9   | Evolution nice-to-have   | 2-3 days |
+| P3-5     | Performance optimization | 2 days   |
+| P3-9     | Architecture upgrade     | 3-5 days |
