@@ -1,12 +1,14 @@
 import { loadConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { applyOagConfigChanges } from "./oag-config-writer.js";
 import {
   resolveOagDeliveryMaxRetries,
   resolveOagDeliveryRecoveryBudgetMs,
   resolveOagLockStaleMs,
   resolveOagStalePollFactor,
 } from "./oag-config.js";
+import { injectEvolutionNote } from "./oag-evolution-notify.js";
 import {
   type OagMemory,
   findRecurringIncidentPattern,
@@ -216,6 +218,14 @@ export async function runPostRecoveryAnalysis(): Promise<PostmortemResult> {
   result.skipped = skipped;
 
   if (applied.length > 0) {
+    const configChanges = applied.map((r) => ({
+      configPath: r.configPath,
+      value: r.suggestedValue,
+    }));
+    await applyOagConfigChanges(configChanges);
+  }
+
+  if (applied.length > 0) {
     await recordEvolution({
       appliedAt: new Date().toISOString(),
       source: "adaptive",
@@ -230,6 +240,14 @@ export async function runPostRecoveryAnalysis(): Promise<PostmortemResult> {
   }
 
   result.userNotification = buildUserNotification(result);
+
+  if (result.userNotification && applied.length > 0) {
+    const evolutionId = `ev-${Date.now()}`;
+    await injectEvolutionNote({
+      message: result.userNotification,
+      evolutionId,
+    });
+  }
 
   return result;
 }
