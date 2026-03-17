@@ -1,9 +1,10 @@
+import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveOagSchedulerMaxWaitMs } from "./oag-config.js";
 
 const log = createSubsystemLogger("oag/scheduler");
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
-const DEFAULT_MAX_WAIT_MS = 5 * 60_000;
 const BACKOFF_FACTOR = 1.5;
 const MAX_POLL_INTERVAL_MS = 60_000;
 
@@ -20,9 +21,10 @@ export async function runWhenIdle<T>(
     maxWaitMs?: number;
     initialPollMs?: number;
     abortSignal?: AbortSignal;
+    cfg?: OpenClawConfig;
   },
 ): Promise<{ result: T; waitedMs: number; ranImmediately: boolean }> {
-  const maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  const maxWaitMs = options?.maxWaitMs ?? resolveOagSchedulerMaxWaitMs(options?.cfg);
   const startedAt = Date.now();
 
   if (isIdle()) {

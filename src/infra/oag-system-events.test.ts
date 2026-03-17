@@ -433,7 +433,7 @@ describe("note deduplication", () => {
     process.env.HOME = originalHome;
   });
 
-  it("deduplicates notes with the same action within 60s window", async () => {
+  it("deduplicates notes with the same action within 60s window, keeping newest only", async () => {
     setStateFile({
       pending_user_notes: [
         {
@@ -454,12 +454,11 @@ describe("note deduplication", () => {
     });
 
     const notes = await consumePendingOagSystemNotes("telegram:+1234");
-    // Within 60s window, only the most recent is shown
+    // Within 60s window: a1 is within 29s of newest a2, so a1 is deduped — only a2 returned
     expect(notes).toHaveLength(1);
-    // channel_backlog_cleared maps to the hardcoded English message
     expect(notes[0].text).toContain("Channel backlog cleared and delivery resumed.");
 
-    // But both are in delivered_user_notes
+    // delivered_user_notes is the audit trail — all consumed notes are recorded
     const written = getWrittenState();
     expect(written.delivered_user_notes).toHaveLength(2);
   });
@@ -488,7 +487,7 @@ describe("note deduplication", () => {
     expect(notes).toHaveLength(2);
   });
 
-  it("preserves duplicate actions outside the 60s window", async () => {
+  it("keeps notes with same action when outside the 60s window (distinct events)", async () => {
     setStateFile({
       pending_user_notes: [
         {
@@ -509,8 +508,10 @@ describe("note deduplication", () => {
     });
 
     const notes = await consumePendingOagSystemNotes("telegram:+1234");
-    // 5 minutes apart → both preserved
+    // 5 minutes apart → c1 is outside the dedup window of c2, both are distinct events → both kept
     expect(notes).toHaveLength(2);
+    expect(notes[0].ts).toBe(Date.parse("2026-03-16T00:00:01.000Z"));
+    expect(notes[1].ts).toBe(Date.parse("2026-03-16T00:05:00.000Z"));
   });
 });
 

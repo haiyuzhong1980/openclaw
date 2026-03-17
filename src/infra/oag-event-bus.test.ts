@@ -11,8 +11,15 @@ vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
 }));
 
-const { emitOagEvent, onOagEvent, onceOagEvent, getOagEventListenerCount, resetOagEventBus } =
-  await import("./oag-event-bus.js");
+const {
+  emitOagEvent,
+  onOagEvent,
+  onceOagEvent,
+  getOagEventListenerCount,
+  resetOagEventBus,
+  getCachedHealthSnapshot,
+  startFileWatcher,
+} = await import("./oag-event-bus.js");
 
 describe("oag-event-bus", () => {
   beforeEach(() => {
@@ -63,5 +70,24 @@ describe("oag-event-bus", () => {
     onOagEvent(() => {});
     resetOagEventBus();
     expect(getOagEventListenerCount()).toBe(0);
+  });
+
+  it("returns null when no snapshot is cached", () => {
+    expect(getCachedHealthSnapshot()).toBeNull();
+  });
+
+  it("returns a deep clone so mutations do not affect the cache", () => {
+    // startFileWatcher triggers an initial read which populates cachedSnapshot
+    startFileWatcher("/tmp/fake-state.json", () => {});
+    const snapshot1 = getCachedHealthSnapshot();
+    expect(snapshot1).not.toBeNull();
+    // Mutate the returned snapshot
+    snapshot1!.injectedField = "should not leak";
+    snapshot1!.congested = true;
+    // Fetch again — should not reflect the mutation
+    const snapshot2 = getCachedHealthSnapshot();
+    expect(snapshot2).not.toBeNull();
+    expect(snapshot2!.injectedField).toBeUndefined();
+    expect(snapshot2!.congested).toBe(false);
   });
 });

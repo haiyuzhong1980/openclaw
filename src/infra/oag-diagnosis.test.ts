@@ -41,7 +41,7 @@ vi.mock("./oag-memory.js", () => ({
   }),
 }));
 
-const { composeDiagnosisPrompt, parseDiagnosisResponse, requestDiagnosis } =
+const { composeDiagnosisPrompt, parseDiagnosisResponse, requestDiagnosis, sanitizeForPrompt } =
   await import("./oag-diagnosis.js");
 
 describe("oag-diagnosis", () => {
@@ -137,5 +137,58 @@ describe("oag-diagnosis", () => {
     expect(result.ran).toBe(true);
     expect(result.record).toBeDefined();
     expect(result.record!.trigger).toBe("recurring_pattern");
+  });
+
+  describe("sanitizeForPrompt", () => {
+    it("serializes primitives via JSON.stringify", () => {
+      expect(sanitizeForPrompt("hello")).toBe('"hello"');
+      expect(sanitizeForPrompt(42)).toBe("42");
+      expect(sanitizeForPrompt(true)).toBe("true");
+      expect(sanitizeForPrompt(null)).toBe("null");
+    });
+
+    it("serializes objects and arrays", () => {
+      expect(sanitizeForPrompt({ a: 1 })).toBe('{"a":1}');
+      expect(sanitizeForPrompt([1, 2, 3])).toBe("[1,2,3]");
+    });
+
+    it("truncates values exceeding 200 chars", () => {
+      const longString = "x".repeat(300);
+      const result = sanitizeForPrompt(longString);
+      // JSON.stringify wraps in quotes, so the raw serialized is 302 chars
+      expect(result.length).toBeLessThanOrEqual(200 + "…[truncated]".length);
+      expect(result).toContain("…[truncated]");
+    });
+
+    it("does not truncate values at exactly 200 chars", () => {
+      // Create a string whose JSON.stringify result is exactly 200 chars: 198 x's + 2 quotes
+      const exactString = "x".repeat(198);
+      const result = sanitizeForPrompt(exactString);
+      expect(result).toBe(JSON.stringify(exactString));
+      expect(result).not.toContain("…[truncated]");
+    });
+
+    it("falls back to String() for non-serializable values", () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      const result = sanitizeForPrompt(circular);
+      expect(result).toBe("[object Object]");
+    });
+  });
+
+  it("composes a prompt with sanitized dynamic data", () => {
+    const prompt = composeDiagnosisPrompt(
+      {
+        type: "recurring_pattern",
+        description: "Telegram crash loop",
+        channel: "telegram",
+        occurrences: 5,
+      },
+      mockMemory.current as never,
+    );
+    // Dynamic values should be JSON-serialized (sanitized), not raw interpolated
+    expect(prompt).toContain('"recurring_pattern"');
+    expect(prompt).toContain('"Telegram crash loop"');
+    expect(prompt).toContain('"telegram"');
   });
 });

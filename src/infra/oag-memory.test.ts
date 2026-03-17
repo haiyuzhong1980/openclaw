@@ -34,6 +34,10 @@ vi.mock("../config/paths.js", () => ({
   resolveStateDir: () => "/tmp/oag-test",
 }));
 
+vi.mock("./oag-config.js", () => ({
+  resolveOagMemoryMaxLifecycleAgeDays: () => 30,
+}));
+
 const {
   loadOagMemory,
   saveOagMemory,
@@ -42,6 +46,7 @@ const {
   recordDiagnosis,
   getRecentCrashes,
   findRecurringIncidentPattern,
+  appendAuditEntry,
 } = await import("./oag-memory.js");
 
 describe("oag-memory", () => {
@@ -55,6 +60,7 @@ describe("oag-memory", () => {
     expect(memory.lifecycles).toEqual([]);
     expect(memory.evolutions).toEqual([]);
     expect(memory.diagnoses).toEqual([]);
+    expect(memory.auditLog).toEqual([]);
   });
 
   it("round-trips memory through save and load", async () => {
@@ -207,5 +213,69 @@ describe("oag-memory", () => {
     const memory = await loadOagMemory();
     expect(memory.evolutions).toHaveLength(1);
     expect(memory.diagnoses).toHaveLength(1);
+  });
+
+  it("appends audit entries", async () => {
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_applied",
+      detail: "test evolution applied",
+      changes: [{ configPath: "gateway.oag.delivery.maxRetries", from: 5, to: 7 }],
+    });
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_confirmed",
+      detail: "test evolution confirmed",
+    });
+    const memory = await loadOagMemory();
+    expect(memory.auditLog).toHaveLength(2);
+    expect(memory.auditLog[0].action).toBe("evolution_applied");
+    expect(memory.auditLog[1].action).toBe("evolution_confirmed");
+  });
+
+  it("caps audit log at 200 entries", async () => {
+    // Pre-fill with 199 entries
+    const memory = await loadOagMemory();
+    for (let i = 0; i < 199; i++) {
+      memory.auditLog.push({
+        timestamp: new Date().toISOString(),
+        action: "evolution_applied",
+        detail: `entry-${i}`,
+      });
+    }
+    await saveOagMemory(memory);
+
+    // Append 2 more — should cap at 200
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_confirmed",
+      detail: "entry-199",
+    });
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_reverted",
+      detail: "entry-200",
+    });
+
+    const final = await loadOagMemory();
+    expect(final.auditLog).toHaveLength(200);
+    // Oldest entry should have been trimmed (entry-0 gone)
+    expect(final.auditLog[0].detail).toBe("entry-1");
+    expect(final.auditLog[199].detail).toBe("entry-200");
+  });
+
+  it("ensures auditLog on legacy memory files missing the field", async () => {
+    // Simulate a legacy memory file without auditLog
+    const mainPath = "/tmp/oag-test/oag-memory.json";
+    const legacy = {
+      version: 1,
+      lifecycles: [],
+      evolutions: [],
+      diagnoses: [],
+    };
+    mockFiles.set(mainPath, JSON.stringify(legacy));
+
+    const memory = await loadOagMemory();
+    expect(memory.auditLog).toEqual([]);
   });
 });

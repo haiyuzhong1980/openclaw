@@ -74,6 +74,15 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "oag",
+    description: "Inspect OAG metrics, history, and incidents",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../oag-cli.js");
+      mod.registerOagCli(program);
+    },
+  },
+  {
     name: "logs",
     description: "Tail gateway file logs via RPC",
     hasSubcommands: false,

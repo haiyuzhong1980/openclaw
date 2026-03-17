@@ -9,12 +9,25 @@ type ConfigChange = {
   value: unknown;
 };
 
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
+  if (!path.startsWith("gateway.oag.")) {
+    throw new Error(`OAG config path must start with "gateway.oag.": ${path}`);
+  }
   const parts = path.split(".");
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
     const key = parts[i];
-    if (!current[key] || typeof current[key] !== "object") {
+    const existing = current[key];
+    if (existing !== undefined && !isPlainObject(existing)) {
+      throw new Error(
+        `Cannot traverse config path "${path}": "${parts.slice(0, i + 1).join(".")}" is not a plain object`,
+      );
+    }
+    if (!existing) {
       current[key] = {};
     }
     current = current[key] as Record<string, unknown>;

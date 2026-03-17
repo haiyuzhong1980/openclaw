@@ -1,11 +1,15 @@
+import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { applyOagConfigChanges } from "./oag-config-writer.js";
-import { loadOagMemory, saveOagMemory } from "./oag-memory.js";
+import {
+  resolveOagEvolutionFailureRegressionThreshold,
+  resolveOagEvolutionObservationWindowMs,
+  resolveOagEvolutionRestartRegressionThreshold,
+} from "./oag-config.js";
+import { appendAuditEntry, loadOagMemory, saveOagMemory } from "./oag-memory.js";
 import { getOagMetrics, type OagMetricCounters } from "./oag-metrics.js";
 
 const log = createSubsystemLogger("oag/evolution-guard");
-
-const DEFAULT_OBSERVATION_WINDOW_MS = 60 * 60_000; // 1 hour
 
 export type EvolutionObservation = {
   evolutionAppliedAt: string;
@@ -23,6 +27,7 @@ export async function startEvolutionObservation(params: {
   appliedAt: string;
   rollbackChanges: Array<{ configPath: string; previousValue: unknown }>;
   windowMs?: number;
+  cfg?: OpenClawConfig;
 }): Promise<void> {
   const metrics = getOagMetrics();
   activeObservation = {
@@ -33,7 +38,7 @@ export async function startEvolutionObservation(params: {
       stalePollDetections: metrics.stalePollDetections,
     },
     rollbackChanges: params.rollbackChanges,
-    windowMs: params.windowMs ?? DEFAULT_OBSERVATION_WINDOW_MS,
+    windowMs: params.windowMs ?? resolveOagEvolutionObservationWindowMs(params.cfg),
   };
   log.info(
     `Evolution observation started (window: ${Math.round(activeObservation.windowMs / 60_000)}min)`,
@@ -91,7 +96,10 @@ export async function restoreObservationFromMemory(): Promise<boolean> {
   }
 }
 
-function detectRegression(observation: EvolutionObservation): {
+function detectRegression(
+  observation: EvolutionObservation,
+  cfg?: OpenClawConfig,
+): {
   regressed: boolean;
   reason?: string;
 } {
@@ -101,13 +109,16 @@ function detectRegression(observation: EvolutionObservation): {
   const restartDelta = current.channelRestarts - baseline.channelRestarts;
   const failureDelta = current.deliveryRecoveryFailures - baseline.deliveryRecoveryFailures;
 
-  if (restartDelta >= 5) {
+  const restartThreshold = resolveOagEvolutionRestartRegressionThreshold(cfg);
+  const failureThreshold = resolveOagEvolutionFailureRegressionThreshold(cfg);
+
+  if (restartDelta >= restartThreshold) {
     return {
       regressed: true,
       reason: `channel restarts spiked by ${restartDelta} since evolution`,
     };
   }
-  if (failureDelta >= 3) {
+  if (failureDelta >= failureThreshold) {
     return {
       regressed: true,
       reason: `delivery recovery failures spiked by ${failureDelta} since evolution`,
@@ -117,7 +128,7 @@ function detectRegression(observation: EvolutionObservation): {
   return { regressed: false };
 }
 
-export async function checkEvolutionHealth(): Promise<{
+export async function checkEvolutionHealth(cfg?: OpenClawConfig): Promise<{
   checked: boolean;
   action: "none" | "reverted" | "confirmed";
   reason?: string;
@@ -128,7 +139,7 @@ export async function checkEvolutionHealth(): Promise<{
 
   const elapsed = Date.now() - Date.parse(activeObservation.evolutionAppliedAt);
 
-  const regression = detectRegression(activeObservation);
+  const regression = detectRegression(activeObservation, cfg);
 
   if (regression.regressed) {
     log.warn(`Evolution regression detected: ${regression.reason} — rolling back`);
@@ -150,6 +161,17 @@ export async function checkEvolutionHealth(): Promise<{
     } catch {
       // Best effort
     }
+
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_reverted",
+      detail: `Regression detected: ${regression.reason}`,
+      changes: activeObservation.rollbackChanges.map((rc) => ({
+        configPath: rc.configPath,
+        from: undefined,
+        to: rc.previousValue,
+      })),
+    });
 
     activeObservation = null;
     try {
@@ -176,6 +198,12 @@ export async function checkEvolutionHealth(): Promise<{
     } catch {
       // Best effort
     }
+
+    await appendAuditEntry({
+      timestamp: new Date().toISOString(),
+      action: "evolution_confirmed",
+      detail: `Evolution confirmed effective after ${Math.round(elapsed / 60_000)}min observation`,
+    });
 
     activeObservation = null;
     try {

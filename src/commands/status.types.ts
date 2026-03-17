@@ -34,8 +34,93 @@ export type HeartbeatStatus = {
   everyMs: number | null;
 };
 
+export type OagMetricsSummary = {
+  channelRestarts: number;
+  deliveryRecoveries: number;
+  deliveryRecoveryFailures: number;
+  activeIncidents: number;
+  lastEvolution?: {
+    appliedAt: string;
+    outcome?: string;
+    changeSummary?: string;
+  };
+};
+
 export type StatusSummary = {
   runtimeVersion?: string | null;
+  oagMetrics?: OagMetricsSummary;
+  oagChannelHealth?: {
+    congested: boolean;
+    backloggedAfterRecovery?: boolean;
+    affectedChannels: string[];
+    affectedTargets?: Array<{
+      channel: string;
+      accountId?: string;
+      sessionKeys: string[];
+      pendingDeliveries?: number;
+      recentFailures?: number;
+    }>;
+    pendingDeliveries: number;
+    recentFailureCount: number;
+    backlogAgeMinutes?: number;
+    escalationRecommended?: boolean;
+    recommendedAction?: string;
+    verifyAttempts?: number;
+    lastAction?: string;
+    lastActionAt?: string;
+    lastActionDetail?: string;
+    lastVerifyAt?: string;
+    lastRestartAt?: string;
+    lastFailureAt?: string;
+    lastRecoveredAt?: string;
+    updatedAt?: string;
+    sessionWatch?: {
+      active: boolean;
+      affectedChannels: string[];
+      stateCounts?: Record<string, number>;
+      escalationRecommended?: boolean;
+      recommendedAction?: string;
+      affectedSessions?: Array<{
+        agentId?: string;
+        sessionKey: string;
+        sessionId?: string;
+        channel?: string;
+        accountId?: string;
+        state?: string;
+        reason?: string;
+        silentMinutes?: number;
+        blockedRetryCount?: number;
+        escalationRecommended?: boolean;
+        recommendedAction?: string;
+      }>;
+      lastAction?: string;
+      lastActionAt?: string;
+      lastActionDetail?: string;
+      lastNudgeAt?: string;
+      updatedAt?: string;
+    };
+    taskWatch?: {
+      active: boolean;
+      counts?: Record<string, number>;
+      escalationRecommended?: boolean;
+      recommendedAction?: string;
+      affectedTasks?: Array<{
+        taskId: string;
+        followupType?: string;
+        priority?: string;
+        escalationCount?: number;
+        currentStep?: number;
+        totalSteps?: number;
+        stepTitle?: string;
+        progressAgeSeconds?: number;
+        terminalStepStuck?: boolean;
+        deferredBy?: string;
+        notBefore?: string;
+        message?: string;
+      }>;
+      updatedAt?: string;
+    };
+  };
   linkChannel?: {
     id: ChannelId;
     label: string;

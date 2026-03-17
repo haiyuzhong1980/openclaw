@@ -5,6 +5,11 @@ import { applyOagConfigChanges } from "./oag-config-writer.js";
 import {
   resolveOagDeliveryMaxRetries,
   resolveOagDeliveryRecoveryBudgetMs,
+  resolveOagEvolutionCooldownMs,
+  resolveOagEvolutionMaxCumulativePercent,
+  resolveOagEvolutionMaxNotificationsPerDay,
+  resolveOagEvolutionMaxStepPercent,
+  resolveOagEvolutionMinCrashesForAnalysis,
   resolveOagLockStaleMs,
   resolveOagStalePollFactor,
 } from "./oag-config.js";
@@ -13,6 +18,7 @@ import { startEvolutionObservation } from "./oag-evolution-guard.js";
 import { injectEvolutionNote } from "./oag-evolution-notify.js";
 import {
   type OagMemory,
+  appendAuditEntry,
   findRecurringIncidentPattern,
   getRecentCrashes,
   loadOagMemory,
@@ -21,15 +27,10 @@ import {
 
 const log = createSubsystemLogger("oag/postmortem");
 
-// Safety rails
-const MAX_STEP_PERCENT = 50;
-const MAX_EVOLUTION_NOTIFICATIONS_PER_DAY = 3;
+// Non-configurable safety rails
 const NOTIFICATION_WINDOW_MS = 24 * 60 * 60_000;
-const MAX_CUMULATIVE_PERCENT = 200;
-const MIN_CRASHES_FOR_ANALYSIS = 2;
 const MIN_PATTERN_OCCURRENCES = 3;
 const ANALYSIS_WINDOW_HOURS = 48;
-const COOLDOWN_BETWEEN_EVOLUTIONS_MS = 4 * 60 * 60_000;
 
 export type EvolutionRecommendation = {
   configPath: string;
@@ -50,9 +51,11 @@ type PostmortemResult = {
   userNotification?: string;
 };
 
-function clampChange(current: number, suggested: number): number {
-  const maxAllowed = current * (1 + MAX_CUMULATIVE_PERCENT / 100);
-  const minAllowed = current * (1 - MAX_STEP_PERCENT / 100);
+function clampChange(current: number, suggested: number, cfg: OpenClawConfig): number {
+  const maxCumulative = resolveOagEvolutionMaxCumulativePercent(cfg);
+  const maxStep = resolveOagEvolutionMaxStepPercent(cfg);
+  const maxAllowed = current * (1 + maxCumulative / 100);
+  const minAllowed = current * (1 - maxStep / 100);
   return Math.max(minAllowed, Math.min(maxAllowed, suggested));
 }
 
@@ -69,7 +72,7 @@ function analyzePatterns(memory: OagMemory, cfg: OpenClawConfig): EvolutionRecom
       case "channel_crash_loop": {
         // Frequent crash loops suggest recovery is too aggressive
         const current = resolveOagDeliveryRecoveryBudgetMs(cfg);
-        const suggested = clampChange(current, Math.round(current * 1.5));
+        const suggested = clampChange(current, Math.round(current * 1.5), cfg);
         if (suggested > current) {
           recommendations.push({
             configPath: "gateway.oag.delivery.recoveryBudgetMs",
@@ -84,7 +87,7 @@ function analyzePatterns(memory: OagMemory, cfg: OpenClawConfig): EvolutionRecom
       }
       case "delivery_recovery_failure": {
         const current = resolveOagDeliveryMaxRetries(cfg);
-        const suggested = clampChange(current, current + 2);
+        const suggested = clampChange(current, current + 2, cfg);
         if (suggested > current) {
           recommendations.push({
             configPath: "gateway.oag.delivery.maxRetries",
@@ -99,7 +102,7 @@ function analyzePatterns(memory: OagMemory, cfg: OpenClawConfig): EvolutionRecom
       }
       case "stale_detection": {
         const current = resolveOagStalePollFactor(cfg);
-        const suggested = clampChange(current, Math.round(current * 1.3));
+        const suggested = clampChange(current, Math.round(current * 1.3), cfg);
         if (suggested > current) {
           recommendations.push({
             configPath: "gateway.oag.health.stalePollFactor",
@@ -114,7 +117,7 @@ function analyzePatterns(memory: OagMemory, cfg: OpenClawConfig): EvolutionRecom
       }
       case "lock_contention": {
         const current = resolveOagLockStaleMs(cfg);
-        const suggested = clampChange(current, Math.round(current * 1.5));
+        const suggested = clampChange(current, Math.round(current * 1.5), cfg);
         if (suggested > current) {
           recommendations.push({
             configPath: "gateway.oag.lock.staleMs",
@@ -133,19 +136,19 @@ function analyzePatterns(memory: OagMemory, cfg: OpenClawConfig): EvolutionRecom
   return recommendations;
 }
 
-function hasExceededNotificationLimit(memory: OagMemory): boolean {
+function hasExceededNotificationLimit(memory: OagMemory, cfg: OpenClawConfig): boolean {
   const cutoff = Date.now() - NOTIFICATION_WINDOW_MS;
   const recentEvolutions = memory.evolutions.filter((e) => Date.parse(e.appliedAt) > cutoff);
-  return recentEvolutions.length >= MAX_EVOLUTION_NOTIFICATIONS_PER_DAY;
+  return recentEvolutions.length >= resolveOagEvolutionMaxNotificationsPerDay(cfg);
 }
 
-function shouldRunEvolution(memory: OagMemory): boolean {
+function shouldRunEvolution(memory: OagMemory, cfg: OpenClawConfig): boolean {
   if (memory.evolutions.length === 0) {
     return true;
   }
   const lastEvolution = memory.evolutions[memory.evolutions.length - 1];
   const lastAt = Date.parse(lastEvolution.appliedAt);
-  return Date.now() - lastAt > COOLDOWN_BETWEEN_EVOLUTIONS_MS;
+  return Date.now() - lastAt > resolveOagEvolutionCooldownMs(cfg);
 }
 
 function buildUserNotification(result: PostmortemResult): string | undefined {
@@ -195,14 +198,15 @@ export async function runPostRecoveryAnalysis(): Promise<PostmortemResult> {
       skipped: [],
     };
 
-    if (recentCrashes.length < MIN_CRASHES_FOR_ANALYSIS) {
+    const minCrashes = resolveOagEvolutionMinCrashesForAnalysis(cfg);
+    if (recentCrashes.length < minCrashes) {
       log.info(
-        `Post-recovery: ${recentCrashes.length} recent crashes (below threshold ${MIN_CRASHES_FOR_ANALYSIS}), skipping analysis`,
+        `Post-recovery: ${recentCrashes.length} recent crashes (below threshold ${minCrashes}), skipping analysis`,
       );
       return result;
     }
 
-    if (!shouldRunEvolution(memory)) {
+    if (!shouldRunEvolution(memory, cfg)) {
       log.info("Post-recovery: evolution cooldown active, skipping");
       return result;
     }
@@ -276,16 +280,23 @@ export async function runPostRecoveryAnalysis(): Promise<PostmortemResult> {
     }
 
     if (applied.length > 0) {
+      const evolutionChanges = applied.map((r) => ({
+        configPath: r.configPath,
+        from: r.currentValue,
+        to: r.suggestedValue,
+      }));
       await recordEvolution({
         appliedAt: new Date().toISOString(),
         source: "adaptive",
         trigger: `post-recovery analysis (${recentCrashes.length} crashes in ${ANALYSIS_WINDOW_HOURS}h)`,
-        changes: applied.map((r) => ({
-          configPath: r.configPath,
-          from: r.currentValue,
-          to: r.suggestedValue,
-        })),
+        changes: evolutionChanges,
         outcome: "pending",
+      });
+      await appendAuditEntry({
+        timestamp: new Date().toISOString(),
+        action: "evolution_applied",
+        detail: `Adaptive evolution: ${applied.map((r) => `${r.configPath} ${r.currentValue} -> ${r.suggestedValue}`).join(", ")}`,
+        changes: evolutionChanges,
       });
       await startEvolutionObservation({
         appliedAt: new Date().toISOString(),
@@ -298,7 +309,11 @@ export async function runPostRecoveryAnalysis(): Promise<PostmortemResult> {
 
     result.userNotification = buildUserNotification(result);
 
-    if (result.userNotification && applied.length > 0 && !hasExceededNotificationLimit(memory)) {
+    if (
+      result.userNotification &&
+      applied.length > 0 &&
+      !hasExceededNotificationLimit(memory, cfg)
+    ) {
       const evolutionId = `ev-${Date.now()}`;
       await injectEvolutionNote({
         message: result.userNotification,

@@ -8,11 +8,20 @@ import { resolveFreshSessionTotalTokens, type SessionEntry } from "../config/ses
 import type { OpenClawConfig } from "../config/types.js";
 import { listGatewayAgentsBasic } from "../gateway/agent-list.js";
 import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-summary.js";
+import { loadOagMemory } from "../infra/oag-memory.js";
+import { getOagMetrics } from "../infra/oag-metrics.js";
 import { peekSystemEvents } from "../infra/system-events.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
 import { resolveRuntimeServiceVersion } from "../version.js";
-import type { HeartbeatStatus, SessionStatus, StatusSummary } from "./status.types.js";
+import { readOagChannelHealthSummary } from "./oag-channel-health.js";
+import { resolveLinkChannelContext } from "./status.link-channel.js";
+import type {
+  HeartbeatStatus,
+  OagMetricsSummary,
+  SessionStatus,
+  StatusSummary,
+} from "./status.types.js";
 
 let channelSummaryModulePromise: Promise<typeof import("../infra/channel-summary.js")> | undefined;
 let linkChannelModulePromise: Promise<typeof import("./status.link-channel.js")> | undefined;
@@ -147,6 +156,42 @@ const buildFlags = (entry?: SessionEntry): string[] => {
   return flags;
 };
 
+async function resolveOagMetricsSummary(): Promise<OagMetricsSummary | undefined> {
+  try {
+    const metrics = getOagMetrics();
+    const memory = await loadOagMemory();
+    const activeIncidents = memory.lifecycles
+      .flatMap((lc) => lc.incidents)
+      .filter((inc) => {
+        const lastAt = Date.parse(inc.lastAt);
+        return Number.isFinite(lastAt) && Date.now() - lastAt < 24 * 60 * 60_000;
+      }).length;
+    const lastEvolution =
+      memory.evolutions.length > 0 ? memory.evolutions[memory.evolutions.length - 1] : undefined;
+    return {
+      channelRestarts: metrics.channelRestarts,
+      deliveryRecoveries: metrics.deliveryRecoveries,
+      deliveryRecoveryFailures: metrics.deliveryRecoveryFailures,
+      activeIncidents,
+      lastEvolution: lastEvolution
+        ? {
+            appliedAt: lastEvolution.appliedAt,
+            outcome: lastEvolution.outcome,
+            changeSummary: lastEvolution.changes
+              ?.slice(0, 2)
+              .map((c) => {
+                const param = c.configPath?.split(".").pop() ?? "?";
+                return `${param} ${String(c.from)}\u2192${String(c.to)}`;
+              })
+              .join(", "),
+          }
+        : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function redactSensitiveStatusSummary(summary: StatusSummary): StatusSummary {
   return {
     ...summary,
@@ -203,6 +248,10 @@ export async function getStatusSummary(
         }),
       )
     : [];
+  const [oagChannelHealth, oagMetrics] = await Promise.all([
+    readOagChannelHealthSummary(),
+    resolveOagMetricsSummary(),
+  ]);
   const mainSessionKey = resolveMainSessionKey(cfg);
   const queuedSystemEvents = peekSystemEvents(mainSessionKey);
 
@@ -330,6 +379,8 @@ export async function getStatusSummary(
       defaultAgentId: agentList.defaultId,
       agents: heartbeatAgents,
     },
+    oagMetrics,
+    oagChannelHealth,
     channelSummary,
     queuedSystemEvents,
     sessions: {

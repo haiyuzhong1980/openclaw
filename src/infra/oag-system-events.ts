@@ -248,7 +248,8 @@ function deduplicateNotesByAction(
     group.sort((a, b) => resolveNoteTimestamp(b) - resolveNoteTimestamp(a));
     const newest = group[0];
     const newestTs = resolveNoteTimestamp(newest);
-    // Only deduplicate notes within the time window of the newest
+    // Keep newest + notes outside the dedup window (far enough apart to be distinct events)
+    // Notes within the window are duplicates and get dropped
     const deduped = group.filter(
       (note) => note === newest || newestTs - resolveNoteTimestamp(note) > dedupWindowMs,
     );

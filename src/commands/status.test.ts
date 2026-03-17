@@ -288,7 +288,56 @@ vi.mock("../channels/plugins/index.js", () => ({
       },
     ] as unknown,
 }));
-vi.mock("../../extensions/whatsapp/src/session.js", () => ({
+vi.mock("../infra/oag-metrics.js", () => ({
+  getOagMetrics: vi.fn(() => ({
+    channelRestarts: 3,
+    deliveryRecoveries: 12,
+    deliveryRecoveryFailures: 0,
+    staleSocketDetections: 1,
+    stalePollDetections: 0,
+    noteDeliveries: 50,
+    noteDeduplications: 2,
+    lockAcquisitions: 10,
+    lockStalRecoveries: 0,
+  })),
+}));
+vi.mock("../infra/oag-memory.js", () => ({
+  loadOagMemory: vi.fn(async () => ({
+    version: 1,
+    lifecycles: [
+      {
+        id: "gw-1",
+        startedAt: new Date(Date.now() - 7200_000).toISOString(),
+        stoppedAt: new Date(Date.now() - 3600_000).toISOString(),
+        stopReason: "restart",
+        uptimeMs: 3600_000,
+        metricsSnapshot: { channelRestarts: 2, deliveryRecoveries: 5 },
+        incidents: [
+          {
+            type: "stale_detection",
+            channel: "telegram",
+            detail: "stale socket",
+            count: 1,
+            firstAt: new Date(Date.now() - 5000_000).toISOString(),
+            lastAt: new Date(Date.now() - 3600_000).toISOString(),
+          },
+        ],
+      },
+    ],
+    evolutions: [
+      {
+        appliedAt: new Date(Date.now() - 7200_000).toISOString(),
+        source: "adaptive",
+        trigger: "crash_loop_detected",
+        changes: [{ configPath: "oag.recoveryBudgetMs", from: 60000, to: 90000 }],
+        outcome: "effective",
+      },
+    ],
+    diagnoses: [],
+    activeObservation: null,
+  })),
+}));
+vi.mock("../web/session.js", () => ({
   webAuthExists: mocks.webAuthExists,
   getWebAuthAgeMs: mocks.getWebAuthAgeMs,
   readWebSelfId: mocks.readWebSelfId,
@@ -356,6 +405,7 @@ vi.mock("../config/config.js", async (importOriginal) => {
   return {
     ...actual,
     loadConfig: mocks.loadConfig,
+    readBestEffortConfig: mocks.loadConfig,
   };
 });
 vi.mock("../daemon/service.js", () => ({
@@ -705,5 +755,33 @@ describe("statusCommand", () => {
     if (originalLoadSessionStore) {
       mocks.loadSessionStore.mockImplementation(originalLoadSessionStore);
     }
+  });
+
+  it("includes oagMetrics in JSON output", async () => {
+    runtimeLogMock.mockClear();
+    await statusCommand({ json: true }, runtime as never);
+    const payload = JSON.parse(String(runtimeLogMock.mock.calls[0]?.[0]));
+    expect(payload.oagMetrics).toBeTruthy();
+    expect(payload.oagMetrics.channelRestarts).toBe(3);
+    expect(payload.oagMetrics.deliveryRecoveries).toBe(12);
+    expect(payload.oagMetrics.deliveryRecoveryFailures).toBe(0);
+    expect(payload.oagMetrics.activeIncidents).toBe(1);
+    expect(payload.oagMetrics.lastEvolution).toBeTruthy();
+    expect(payload.oagMetrics.lastEvolution.outcome).toBe("effective");
+  });
+
+  it("shows OAG summary line in formatted output", async () => {
+    const logs = await runStatusAndGetLogs();
+    expect(logs.some((line) => line.includes("3 restarts"))).toBe(true);
+    expect(logs.some((line) => line.includes("12 recoveries"))).toBe(true);
+    expect(logs.some((line) => line.includes("0 failures"))).toBe(true);
+    expect(logs.some((line) => line.includes("1 incident"))).toBe(true);
+  });
+
+  it("shows OAG evolution line when evolutions exist", async () => {
+    const logs = await runStatusAndGetLogs();
+    expect(logs.some((line) => line.includes("OAG evolution"))).toBe(true);
+    expect(logs.some((line) => line.includes("effective"))).toBe(true);
+    expect(logs.some((line) => line.includes("recoveryBudgetMs"))).toBe(true);
   });
 });

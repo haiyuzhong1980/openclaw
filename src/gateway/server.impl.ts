@@ -1190,6 +1190,9 @@ export async function startGatewayServer(
       getActiveRuns: () => getActiveEmbeddedRunCount(),
     });
     void runWhenIdle(async () => {
+      if (startupDeliveryRecovery) {
+        await startupDeliveryRecovery;
+      }
       const postmortem = await runPostRecoveryAnalysis();
       if (postmortem.userNotification) {
         log.info(`OAG evolution: ${postmortem.userNotification}`);

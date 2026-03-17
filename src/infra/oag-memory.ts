@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveOagMemoryMaxLifecycleAgeDays } from "./oag-config.js";
 import type { OagMetricCounters } from "./oag-metrics.js";
 
 const OAG_MEMORY_FILENAME = "oag-memory.json";
-const MAX_LIFECYCLE_AGE_DAYS = 30;
 const MAX_LIFECYCLES = 100;
 
 export type OagIncident = {
@@ -62,11 +63,19 @@ export type OagDiagnosisRecord = {
   completedAt: string;
 };
 
+export type OagAuditEntry = {
+  timestamp: string;
+  action: "evolution_applied" | "evolution_reverted" | "evolution_confirmed";
+  detail: string;
+  changes?: Array<{ configPath: string; from: unknown; to: unknown }>;
+};
+
 export type OagMemory = {
   version: number;
   lifecycles: OagLifecycle[];
   evolutions: OagEvolutionRecord[];
   diagnoses: OagDiagnosisRecord[];
+  auditLog: OagAuditEntry[];
   activeObservation?: {
     evolutionAppliedAt: string;
     baselineMetrics: Record<string, number>;
@@ -79,14 +88,24 @@ function resolveMemoryPath(): string {
   return path.join(resolveStateDir(), OAG_MEMORY_FILENAME);
 }
 
+const MAX_AUDIT_LOG_ENTRIES = 200;
+
 function createEmptyMemory(): OagMemory {
   return {
     version: 1,
     lifecycles: [],
     evolutions: [],
     diagnoses: [],
+    auditLog: [],
     activeObservation: null,
   };
+}
+
+function ensureAuditLog(memory: OagMemory): OagMemory {
+  if (!Array.isArray(memory.auditLog)) {
+    memory.auditLog = [];
+  }
+  return memory;
 }
 
 export async function loadOagMemory(): Promise<OagMemory> {
@@ -96,7 +115,7 @@ export async function loadOagMemory(): Promise<OagMemory> {
     const raw = await fs.readFile(filePath, "utf8");
     const parsed = JSON.parse(raw) as OagMemory;
     if (parsed.version && Array.isArray(parsed.lifecycles)) {
-      return parsed;
+      return ensureAuditLog(parsed);
     }
   } catch {
     // Main file missing or corrupt
@@ -106,7 +125,7 @@ export async function loadOagMemory(): Promise<OagMemory> {
     const raw = await fs.readFile(`${filePath}.bak`, "utf8");
     const parsed = JSON.parse(raw) as OagMemory;
     if (parsed.version && Array.isArray(parsed.lifecycles)) {
-      return parsed;
+      return ensureAuditLog(parsed);
     }
   } catch {
     // Backup also missing or corrupt
@@ -128,8 +147,9 @@ export async function saveOagMemory(memory: OagMemory): Promise<void> {
   await fs.rename(tmp, filePath);
 }
 
-function pruneOldLifecycles(memory: OagMemory): void {
-  const cutoff = Date.now() - MAX_LIFECYCLE_AGE_DAYS * 24 * 60 * 60_000;
+function pruneOldLifecycles(memory: OagMemory, cfg?: OpenClawConfig): void {
+  const ageDays = resolveOagMemoryMaxLifecycleAgeDays(cfg);
+  const cutoff = Date.now() - ageDays * 24 * 60 * 60_000;
   memory.lifecycles = memory.lifecycles
     .filter((lc) => Date.parse(lc.stoppedAt) > cutoff)
     .slice(-MAX_LIFECYCLES);
@@ -140,6 +160,7 @@ export async function recordLifecycleShutdown(params: {
   stopReason: OagLifecycle["stopReason"];
   metricsSnapshot: Partial<OagMetricCounters>;
   incidents: OagIncident[];
+  cfg?: OpenClawConfig;
 }): Promise<void> {
   const memory = await loadOagMemory();
   const now = Date.now();
@@ -152,7 +173,7 @@ export async function recordLifecycleShutdown(params: {
     metricsSnapshot: params.metricsSnapshot,
     incidents: params.incidents,
   });
-  pruneOldLifecycles(memory);
+  pruneOldLifecycles(memory, params.cfg);
   await saveOagMemory(memory);
 }
 
@@ -169,6 +190,14 @@ export async function recordDiagnosis(record: OagDiagnosisRecord): Promise<void>
   memory.diagnoses.push(record);
   // Keep last 20 diagnosis records
   memory.diagnoses = memory.diagnoses.slice(-20);
+  await saveOagMemory(memory);
+}
+
+export async function appendAuditEntry(entry: OagAuditEntry): Promise<void> {
+  const memory = await loadOagMemory();
+  memory.auditLog.push(entry);
+  // Cap at MAX_AUDIT_LOG_ENTRIES, keeping the most recent entries
+  memory.auditLog = memory.auditLog.slice(-MAX_AUDIT_LOG_ENTRIES);
   await saveOagMemory(memory);
 }
 

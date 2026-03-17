@@ -59,7 +59,11 @@ export function getOagEventListenerCount(): number {
 let cachedSnapshot: Record<string, unknown> | null = null;
 
 export function getCachedHealthSnapshot(): Record<string, unknown> | null {
-  return cachedSnapshot;
+  if (cachedSnapshot === null) {
+    return null;
+  }
+  // Return a deep clone to prevent external mutation of the cached snapshot.
+  return JSON.parse(JSON.stringify(cachedSnapshot)) as Record<string, unknown>;
 }
 
 export function startFileWatcher(

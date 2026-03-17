@@ -61,4 +61,24 @@ describe("oag-config-writer", () => {
     const health = oag.health as Record<string, unknown>;
     expect(health.stalePollFactor).toBe(3);
   });
+
+  it("rejects config paths outside the gateway.oag. namespace", async () => {
+    await expect(
+      applyOagConfigChanges([{ configPath: "gateway.channels.telegram.enabled", value: true }]),
+    ).rejects.toThrow('OAG config path must start with "gateway.oag."');
+  });
+
+  it("rejects a bare path without gateway.oag. prefix", async () => {
+    await expect(applyOagConfigChanges([{ configPath: "debug", value: true }])).rejects.toThrow(
+      'OAG config path must start with "gateway.oag."',
+    );
+  });
+
+  it("throws when an intermediate path segment is not a plain object", async () => {
+    // loadConfig returns { gateway: { oag: { delivery: { maxRetries: 5 } } } }
+    // delivery.maxRetries is a number, so traversing through it should throw
+    await expect(
+      applyOagConfigChanges([{ configPath: "gateway.oag.delivery.maxRetries.nested", value: 1 }]),
+    ).rejects.toThrow("is not a plain object");
+  });
 });

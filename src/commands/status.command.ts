@@ -21,6 +21,11 @@ import type { RuntimeEnv } from "../runtime.js";
 import { getTerminalTableWidth, renderTable } from "../terminal/table.js";
 import { theme } from "../terminal/theme.js";
 import { formatHealthChannelLines, type HealthSummary } from "./health.js";
+import {
+  formatOagChannelHealthLine,
+  formatOagSessionWatchLine,
+  formatOagTaskWatchLine,
+} from "./oag-channel-health.js";
 import { resolveControlUiLinks } from "./onboard-helpers.js";
 import { statusAllCommand } from "./status-all.js";
 import { groupChannelIssuesByChannel } from "./status-all/channel-issues.js";
@@ -341,6 +346,77 @@ export async function statusCommand(
     : "";
   const eventsValue =
     summary.queuedSystemEvents.length > 0 ? `${summary.queuedSystemEvents.length} queued` : "none";
+  const oagChannelValue = (() => {
+    const channelHealth = summary.oagChannelHealth;
+    if (!channelHealth) {
+      return muted("unavailable");
+    }
+    const line = formatOagChannelHealthLine(channelHealth);
+    if (
+      channelHealth.congested ||
+      channelHealth.escalationRecommended ||
+      channelHealth.backloggedAfterRecovery
+    ) {
+      return warn(line);
+    }
+    return ok(line);
+  })();
+  const oagSessionValue = (() => {
+    const channelHealth = summary.oagChannelHealth;
+    if (!channelHealth) {
+      return muted("unavailable");
+    }
+    const line = formatOagSessionWatchLine(channelHealth);
+    if (channelHealth.sessionWatch?.active) {
+      return warn(line);
+    }
+    return ok(line);
+  })();
+  const oagTaskValue = (() => {
+    const channelHealth = summary.oagChannelHealth;
+    if (!channelHealth) {
+      return muted("unavailable");
+    }
+    const line = formatOagTaskWatchLine(channelHealth);
+    if (channelHealth.taskWatch?.active) {
+      return warn(line);
+    }
+    return ok(line);
+  })();
+
+  const oagSummaryValue = (() => {
+    const m = summary.oagMetrics;
+    if (!m) {
+      return muted("unavailable");
+    }
+    const parts = [
+      `${m.channelRestarts} restart${m.channelRestarts !== 1 ? "s" : ""}`,
+      `${m.deliveryRecoveries} recover${m.deliveryRecoveries !== 1 ? "ies" : "y"}`,
+      `${m.deliveryRecoveryFailures} failure${m.deliveryRecoveryFailures !== 1 ? "s" : ""}`,
+      `${m.activeIncidents} incident${m.activeIncidents !== 1 ? "s" : ""}`,
+    ];
+    const line = parts.join(" \u00B7 ");
+    if (m.deliveryRecoveryFailures > 0 || m.activeIncidents > 0) {
+      return warn(line);
+    }
+    return ok(line);
+  })();
+  const oagEvolutionValue = (() => {
+    const m = summary.oagMetrics;
+    if (!m?.lastEvolution) {
+      return null;
+    }
+    const evo = m.lastEvolution;
+    const age = evo.appliedAt ? Math.round((Date.now() - Date.parse(evo.appliedAt)) / 60_000) : 0;
+    const ageLabel = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+    const outcome = evo.outcome ?? "unknown";
+    const changePart = evo.changeSummary ? ` ${evo.changeSummary}` : "";
+    const line = `last ${ageLabel} \u00B7 ${outcome}${changePart}`;
+    if (outcome === "reverted") {
+      return warn(line);
+    }
+    return ok(line);
+  })();
 
   const probesValue = health ? ok("enabled") : muted("skipped (use --deep)");
 
@@ -460,6 +536,11 @@ export async function statusCommand(
     { Item: "Agents", Value: agentsValue },
     { Item: "Memory", Value: memoryValue },
     { Item: "Plugin compatibility", Value: pluginCompatibilityValue },
+    { Item: "OAG", Value: oagSummaryValue },
+    ...(oagEvolutionValue ? [{ Item: "OAG evolution", Value: oagEvolutionValue }] : []),
+    { Item: "OAG channels", Value: oagChannelValue },
+    { Item: "OAG sessions", Value: oagSessionValue },
+    { Item: "OAG tasks", Value: oagTaskValue },
     { Item: "Probes", Value: probesValue },
     { Item: "Events", Value: eventsValue },
     { Item: "Heartbeat", Value: heartbeatValue },

@@ -25,12 +25,13 @@ vi.mock("./oag-memory.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("./oag-memory.js")>();
   return {
     ...original,
-    loadOagMemory: vi.fn(async () => ({ ...mockMemory.current })),
+    loadOagMemory: vi.fn(async () => ({ ...mockMemory.current, auditLog: [] })),
     saveOagMemory: vi.fn(async (m: unknown) => {
       mockMemory.current = m as typeof mockMemory.current;
     }),
     recordEvolution: vi.fn(async () => {}),
     recordDiagnosis: vi.fn(async () => {}),
+    appendAuditEntry: vi.fn(async () => {}),
     getRecentCrashes: original.getRecentCrashes,
     findRecurringIncidentPattern: original.findRecurringIncidentPattern,
   };
@@ -42,6 +43,14 @@ vi.mock("./oag-config.js", () => ({
   resolveOagLockStaleMs: () => 30000,
   resolveOagNoteDedupWindowMs: () => 60000,
   resolveOagStalePollFactor: () => 2,
+  resolveOagEvolutionMaxStepPercent: () => 50,
+  resolveOagEvolutionMaxCumulativePercent: () => 200,
+  resolveOagEvolutionMaxNotificationsPerDay: () => 3,
+  resolveOagEvolutionMinCrashesForAnalysis: () => 2,
+  resolveOagEvolutionCooldownMs: () => 4 * 60 * 60_000,
+  resolveOagEvolutionObservationWindowMs: () => 60 * 60_000,
+  resolveOagEvolutionRestartRegressionThreshold: () => 5,
+  resolveOagEvolutionFailureRegressionThreshold: () => 3,
 }));
 
 vi.mock("./oag-metrics.js", () => ({

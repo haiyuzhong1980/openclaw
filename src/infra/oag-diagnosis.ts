@@ -13,6 +13,25 @@ const log = createSubsystemLogger("oag/diagnosis");
 
 const DIAGNOSIS_COOLDOWN_MS = 4 * 60 * 60_000; // 4 hours
 const MAX_LIFECYCLE_CONTEXT = 5;
+const MAX_PROMPT_VALUE_LENGTH = 200;
+
+/**
+ * Sanitize an arbitrary value for safe inclusion in a diagnosis prompt.
+ * JSON-stringifies the value and truncates to MAX_PROMPT_VALUE_LENGTH chars
+ * to prevent prompt injection and unbounded prompt size.
+ */
+export function sanitizeForPrompt(value: unknown): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    serialized = String(value);
+  }
+  if (serialized.length <= MAX_PROMPT_VALUE_LENGTH) {
+    return serialized;
+  }
+  return serialized.slice(0, MAX_PROMPT_VALUE_LENGTH) + "…[truncated]";
+}
 
 export type DiagnosisTrigger = {
   type: "recurring_pattern" | "adaptation_failed" | "recovery_degraded";
@@ -63,23 +82,23 @@ Your analysis will be used to automatically tune operational parameters.
 Respond ONLY with valid JSON matching the schema below.
 
 ## Current Incident
-Type: ${trigger.type}
-Description: ${trigger.description}
-${trigger.patternType ? `Pattern: ${trigger.patternType}` : ""}
-${trigger.channel ? `Channel: ${trigger.channel}` : ""}
-${trigger.occurrences ? `Occurrences: ${trigger.occurrences}` : ""}
+Type: ${sanitizeForPrompt(trigger.type)}
+Description: ${sanitizeForPrompt(trigger.description)}
+${trigger.patternType ? `Pattern: ${sanitizeForPrompt(trigger.patternType)}` : ""}
+${trigger.channel ? `Channel: ${sanitizeForPrompt(trigger.channel)}` : ""}
+${trigger.occurrences ? `Occurrences: ${sanitizeForPrompt(trigger.occurrences)}` : ""}
 
 ## Recent Lifecycle History (last ${recentLifecycles.length})
-${JSON.stringify(recentLifecycles, null, 2)}
+${sanitizeForPrompt(recentLifecycles)}
 
 ## Current Metrics
-${JSON.stringify(metrics, null, 2)}
+${sanitizeForPrompt(metrics)}
 
 ## Current OAG Config
-${JSON.stringify(oagConfig, null, 2)}
+${sanitizeForPrompt(oagConfig)}
 
 ## Previous Evolutions
-${JSON.stringify(previousEvolutions, null, 2)}
+${sanitizeForPrompt(previousEvolutions)}
 
 ## Response Schema
 {

@@ -33,14 +33,22 @@ vi.mock("./oag-config-writer.js", () => ({
 const mockMemory = vi.hoisted(() => ({
   current: { version: 1, lifecycles: [], evolutions: [] as unknown[], diagnoses: [] },
 }));
+vi.mock("./oag-config.js", () => ({
+  resolveOagEvolutionObservationWindowMs: () => 60 * 60_000,
+  resolveOagEvolutionRestartRegressionThreshold: () => 5,
+  resolveOagEvolutionFailureRegressionThreshold: () => 3,
+}));
+
 vi.mock("./oag-memory.js", () => ({
   loadOagMemory: vi.fn(async () => ({
     ...mockMemory.current,
     evolutions: [...mockMemory.current.evolutions],
+    auditLog: [],
   })),
   saveOagMemory: vi.fn(async (m: unknown) => {
     mockMemory.current = m as typeof mockMemory.current;
   }),
+  appendAuditEntry: vi.fn(async () => {}),
 }));
 
 const {
