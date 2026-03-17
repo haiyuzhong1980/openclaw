@@ -373,6 +373,71 @@ export async function startGatewayServer(
   const minimalTestGateway =
     process.env.VITEST === "1" && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1";
 
+  // Register process-level crash recording FIRST — before any config validation
+  // that might throw. This ensures OAG memory captures startup crashes, not just
+  // graceful shutdowns. Without this, crash loops during startup (e.g., invalid
+  // config) leave no lifecycle record and the evolution system never triggers.
+  const processStartedAt = Date.now();
+  if (!minimalTestGateway) {
+    const onProcessExit = () => {
+      try {
+        // Synchronous best-effort write — process.on('exit') doesn't support async
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const stateDir = process.env.HOME ? `${process.env.HOME}/.openclaw/state` : null;
+        if (!stateDir) {
+          return;
+        }
+        const memoryPath = path.join(stateDir, "oag-memory.json");
+        let memory: {
+          version: number;
+          lifecycles: unknown[];
+          evolutions: unknown[];
+          diagnoses: unknown[];
+          activeObservation?: unknown;
+        };
+        try {
+          memory = JSON.parse(fs.readFileSync(memoryPath, "utf8"));
+        } catch {
+          memory = { version: 1, lifecycles: [], evolutions: [], diagnoses: [] };
+        }
+        memory.lifecycles.push({
+          id: `gw-crash-${Date.now()}`,
+          startedAt: new Date(processStartedAt).toISOString(),
+          stoppedAt: new Date().toISOString(),
+          stopReason: "crash",
+          uptimeMs: Date.now() - processStartedAt,
+          metricsSnapshot: {},
+          incidents: [
+            {
+              type: "channel_crash_loop",
+              detail: "process exit during startup",
+              count: 1,
+              firstAt: new Date().toISOString(),
+              lastAt: new Date().toISOString(),
+            },
+          ],
+        });
+        // Keep last 100
+        if (memory.lifecycles.length > 100) {
+          memory.lifecycles = memory.lifecycles.slice(-100);
+        }
+        fs.mkdirSync(path.dirname(memoryPath), { recursive: true });
+        fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2) + "\n", "utf8");
+      } catch {
+        // Best-effort — if this fails, we lose crash history but don't make things worse
+      }
+    };
+    process.on("exit", onProcessExit);
+    // Remove the exit handler once startup completes successfully
+    // (the graceful close handler in server.impl takes over)
+    setTimeout(() => {
+      process.removeListener("exit", onProcessExit);
+    }, 0);
+    // We'll clear this in a more precise place below after startup succeeds
+    (globalThis as Record<string, unknown>).__oagProcessExitHandler = onProcessExit;
+  }
+
   // Ensure all default port derivations (browser/canvas) see the actual runtime port.
   process.env.OPENCLAW_GATEWAY_PORT = String(port);
   logAcceptedEnvOption({
@@ -1433,6 +1498,16 @@ export async function startGatewayServer(
     httpServer,
     httpServers,
   });
+
+  // Startup succeeded — remove the process-level crash handler.
+  // The graceful close handler below will record lifecycle shutdown instead.
+  if (!minimalTestGateway) {
+    const crashHandler = (globalThis as Record<string, unknown>).__oagProcessExitHandler;
+    if (typeof crashHandler === "function") {
+      process.removeListener("exit", crashHandler as NodeJS.ExitListener);
+      delete (globalThis as Record<string, unknown>).__oagProcessExitHandler;
+    }
+  }
 
   return {
     close: async (opts) => {
