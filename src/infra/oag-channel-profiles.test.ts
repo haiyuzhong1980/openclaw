@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  getChannelAnomalyThreshold,
+  getChannelBaselines,
   getTransportProfile,
   isPassiveChannel,
   isPollingChannel,
@@ -150,5 +152,88 @@ describe("isPassiveChannel", () => {
     expect(isPassiveChannel("discord")).toBe(false);
     expect(isPassiveChannel("telegram")).toBe(false);
     expect(isPassiveChannel("signal")).toBe(false);
+  });
+});
+
+describe("getChannelAnomalyThreshold", () => {
+  it("returns elevated threshold for noisy channels", () => {
+    expect(getChannelAnomalyThreshold("discord")).toBe(2.5);
+    expect(getChannelAnomalyThreshold("slack")).toBe(2.5);
+  });
+
+  it("returns threshold for quiet channels", () => {
+    expect(getChannelAnomalyThreshold("signal")).toBe(2.0);
+  });
+
+  it("returns default threshold for channels without overrides", () => {
+    expect(getChannelAnomalyThreshold("telegram")).toBe(2.0);
+    expect(getChannelAnomalyThreshold("whatsapp")).toBe(2.0);
+    expect(getChannelAnomalyThreshold("unknown")).toBe(2.0);
+  });
+});
+
+describe("getChannelBaselines", () => {
+  it("returns discord baselines with rate_limit and auth_resource", () => {
+    const baselines = getChannelBaselines("discord");
+    expect(baselines).toBeDefined();
+    expect(baselines!.rate_limit).toBeDefined();
+    expect(baselines!.rate_limit.expectedPerHour).toBeGreaterThan(0);
+    expect(baselines!.auth_resource).toBeDefined();
+    expect(baselines!.auth_resource.note).toContain("4014");
+  });
+
+  it("returns telegram baselines with poll_stall and network_timeout", () => {
+    const baselines = getChannelBaselines("telegram");
+    expect(baselines).toBeDefined();
+    expect(baselines!.poll_stall).toBeDefined();
+    expect(baselines!.network_timeout).toBeDefined();
+    expect(baselines!.network_timeout.expectedPerHour).toBeGreaterThan(0);
+  });
+
+  it("returns signal baselines with low general threshold", () => {
+    const baselines = getChannelBaselines("signal");
+    expect(baselines).toBeDefined();
+    expect(baselines!.general).toBeDefined();
+    expect(baselines!.general.expectedPerHour).toBeLessThan(1);
+  });
+
+  it("returns slack baselines with websocket_408 and reconnect", () => {
+    const baselines = getChannelBaselines("slack");
+    expect(baselines).toBeDefined();
+    expect(baselines!.websocket_408).toBeDefined();
+    expect(baselines!.reconnect).toBeDefined();
+  });
+
+  it("returns whatsapp baselines with auth_pairing", () => {
+    const baselines = getChannelBaselines("whatsapp");
+    expect(baselines).toBeDefined();
+    expect(baselines!.auth_pairing).toBeDefined();
+    expect(baselines!.auth_pairing.note).toContain("Session rotation");
+  });
+
+  it("returns web baselines with auth_pairing (WhatsApp Web alias)", () => {
+    const baselines = getChannelBaselines("web");
+    expect(baselines).toBeDefined();
+    expect(baselines!.auth_pairing).toBeDefined();
+  });
+
+  it("returns undefined for channels without baselines", () => {
+    expect(getChannelBaselines("matrix")).toBeUndefined();
+    expect(getChannelBaselines("unknown-channel")).toBeUndefined();
+  });
+
+  it("every baseline has required fields", () => {
+    for (const channel of ["discord", "telegram", "signal", "slack", "whatsapp", "web"]) {
+      const baselines = getChannelBaselines(channel);
+      expect(baselines).toBeDefined();
+      for (const [_key, baseline] of Object.entries(baselines!)) {
+        expect(baseline.expectedPerHour).toBeTypeOf("number");
+        expect(baseline.stddev).toBeTypeOf("number");
+        expect(baseline.note).toBeTypeOf("string");
+        expect(baseline.note.length).toBeGreaterThan(0);
+        // stddev must be non-negative
+        expect(baseline.stddev).toBeGreaterThanOrEqual(0);
+      }
+    }
   });
 });

@@ -51,30 +51,39 @@ export type RootCauseResult = {
 const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
   // Rate limiting (2,456 real events)
   [/API rate limit|rate.?limit reached|too many req/i, "rate_limit", 0.95],
-  [/429/i, "rate_limit", 0.85],
+  [/\b429\b|HTTP 429|status[:\s]+429|429.*Too Many/i, "rate_limit", 0.85],
   [/lane wait exceeded|waitedMs/i, "rate_limit", 0.7],
 
   // Auth failure (2,244 real events)
   [/401.*Unauthorized|failed.*401|401.*failed/i, "auth_token_invalid", 0.95],
   [/身份验证失败|authentication failed/i, "auth_token_invalid", 0.9],
-  [/403.*Forbidden|blocked|banned/i, "auth_blocked", 0.9],
+  [
+    /403.*Forbidden|IP.*blocked|account.*blocked|account.*banned|permanently banned/i,
+    "auth_blocked",
+    0.9,
+  ],
   [/pairing required|code=1008/i, "auth_pairing", 0.95],
-  [/resource not granted|code.*3001/i, "auth_resource", 0.85],
+  [/resource not granted|close.*code.*3001|code=3001|error.*3001/i, "auth_resource", 0.85],
+  [/Message Content Intent|privileged.*intent/i, "auth_resource", 0.8],
   [/token.*expired|token.*invalid/i, "auth_token_invalid", 0.9],
 
   // Lifecycle-specific ETIMEDOUT patterns must precede the generic network ETIMEDOUT pattern
   // so that "spawnSync launchctl ETIMEDOUT" routes to lifecycle, not network_timeout.
   [/spawnSync launchctl ETIMEDOUT/i, "lifecycle_launchctl", 0.95],
 
+  // LLM-specific timeout must precede the generic timeout pattern
+  [/LLM request timed out/i, "llm_timeout", 0.9],
+
   // Network (3,300+ real events)
   [/autoSelectFamily.*false.*ipv4first/i, "network_dns", 0.8],
   [/ENOTFOUND|getaddrinfo.*failed/i, "network_dns", 0.95],
+  // Port-specific ECONNREFUSED must precede generic so Redis/Postgres get higher confidence
+  [/ECONNREFUSED.*(6379|5432)/i, "network_refused", 0.97],
   [/ECONNREFUSED|connection refused/i, "network_refused", 0.95],
   [/ETIMEDOUT|timed? ?out|timeout after \d+ms/i, "network_timeout", 0.85],
   [/TLS.*handshake|secure.*connection/i, "network_tls", 0.9],
   [/Polling stall.*no getUpdates/i, "network_poll_stall", 0.9],
   [/reconnect watchdog timeout/i, "network_watchdog", 0.95],
-  [/LLM request timed out/i, "llm_timeout", 0.9],
   [/socket hang up|ECONNRESET/i, "network_timeout", 0.8],
   [/fetch failed|network.*error/i, "network_timeout", 0.7],
 
@@ -82,10 +91,13 @@ const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
   [/Cannot find module/i, "config_missing_module", 0.95],
   [/JSON5? parse failed|invalid.*config.*json/i, "config_invalid_json", 0.95],
   [/Unknown model|unknown.*model/i, "config_unknown_model", 0.9],
+  [/missing.*migration|migration.*missing|migration.*failed/i, "config_invalid_json", 0.6],
   [/is not a function|SDK.*mismatch/i, "config_sdk_mismatch", 0.85],
 
   // Lifecycle (32 real events, highest impact)
+  [/another.*instance.*already.*listening|already listening on/i, "lifecycle_port_conflict", 0.85],
   [/GatewayDrainingError|draining for restart/i, "lifecycle_drain", 0.95],
+  [/worker terminated|process (exited|crashed|terminated) unexpectedly/i, "lifecycle_drain", 0.5],
   [/kill-failed.*pid.*not found/i, "lifecycle_stale_pid", 0.9],
   [/address already in use|EADDRINUSE|Errno 48/i, "lifecycle_port_conflict", 0.95],
 
@@ -117,6 +129,7 @@ const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
 
   // Internal bugs
   [/TypeError|ReferenceError|SyntaxError/i, "internal_bug", 0.7],
+  [/Cannot read propert(y|ies) of (null|undefined)/i, "internal_bug", 0.65],
   [/KeyError|AttributeError/i, "internal_bug", 0.8],
   [/Unhandled.*rejection/i, "internal_bug", 0.75],
   [/write after end/i, "internal_bug", 0.8],

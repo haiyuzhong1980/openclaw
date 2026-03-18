@@ -19,6 +19,8 @@ const DEFAULTS = {
     maxDeliveredHistory: 20,
   },
   evolution: {
+    // opt-in: operators must explicitly enable auto-application of OAG suggestions
+    autoApply: false,
     maxStepPercent: 50,
     maxCumulativePercent: 200,
     maxNotificationsPerDay: 3,
@@ -191,6 +193,16 @@ export function resolveOagEvolutionPeriodicAnalysisIntervalMs(cfg?: OpenClawConf
 export function resolveOagEvolutionMinChannelIncidentsForAnalysis(cfg?: OpenClawConfig): number {
   const v = resolveOagSection(cfg)?.evolution?.minChannelIncidentsForAnalysis;
   return typeof v === "number" && v > 0 ? v : DEFAULTS.evolution.minChannelIncidentsForAnalysis;
+}
+
+/**
+ * Whether OAG may automatically apply low-risk config suggestions.
+ * Defaults to false (opt-in). Operators must explicitly set
+ * gateway.oag.evolution.autoApply = true to enable auto-application.
+ */
+export function resolveOagEvolutionAutoApply(cfg?: OpenClawConfig): boolean {
+  const v = resolveOagSection(cfg)?.evolution?.autoApply;
+  return typeof v === "boolean" ? v : DEFAULTS.evolution.autoApply;
 }
 
 // --- Scheduler resolvers ---

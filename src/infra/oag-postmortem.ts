@@ -17,6 +17,7 @@ import {
   resolveOagEvolutionMinChannelIncidentsForAnalysis,
   resolveOagEvolutionMinCrashesForAnalysis,
   resolveOagEvolutionPeriodicAnalysisIntervalMs,
+  resolveOagEvolutionAutoApply,
   resolveOagEvolutionRestartRegressionThreshold,
   resolveOagLockStaleMs,
   resolveOagStalePollFactor,
@@ -561,12 +562,14 @@ export async function runPostRecoveryAnalysis(
       return result;
     }
 
-    // Apply low-risk recommendations automatically
+    // Apply low-risk recommendations automatically only when autoApply is opted in.
+    // Default is false; operators must set gateway.oag.evolution.autoApply = true.
+    const autoApply = resolveOagEvolutionAutoApply(cfg);
     const applied: EvolutionRecommendation[] = [];
     const skipped: EvolutionRecommendation[] = [];
 
     for (const rec of recommendations) {
-      if (rec.risk === "low") {
+      if (autoApply && rec.risk === "low") {
         applied.push(rec);
         log.info(
           `Post-recovery evolution: ${rec.configPath} ${rec.currentValue} → ${rec.suggestedValue} (${rec.reason})`,

@@ -1,4 +1,6 @@
+import { loadConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveOagEvolutionAutoApply } from "./oag-config.js";
 import {
   completeDiagnosis,
   composeDiagnosisPrompt,
@@ -67,12 +69,17 @@ export async function dispatchDiagnosis(
       return { dispatched: true, applied: 0 };
     }
 
-    // Apply low-risk config recommendations
-    const { applyOagConfigChanges } = await import("./oag-config-writer.js");
-    const lowRisk = result.recommendations.filter(
-      (r) => r.type === "config_change" && r.risk === "low" && r.configPath,
-    );
+    // Apply low-risk config recommendations only when autoApply is opted in.
+    // Default is false; operators must set gateway.oag.evolution.autoApply = true.
+    const cfg = loadConfig();
+    const autoApply = resolveOagEvolutionAutoApply(cfg);
+    const lowRisk = autoApply
+      ? result.recommendations.filter(
+          (r) => r.type === "config_change" && r.risk === "low" && r.configPath,
+        )
+      : [];
     if (lowRisk.length > 0) {
+      const { applyOagConfigChanges } = await import("./oag-config-writer.js");
       const changes = lowRisk.map((r) => ({ configPath: r.configPath!, value: r.suggestedValue }));
       await applyOagConfigChanges(changes);
       log.info(`Diagnosis ${diagnosisId}: applied ${lowRisk.length} low-risk config changes`);

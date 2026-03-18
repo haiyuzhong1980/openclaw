@@ -38,7 +38,7 @@ export type OagIncident = {
   count: number;
   firstAt: string;
   lastAt: string;
-  resolvedAt?: number;
+  resolvedAt?: string;
   recoveryMs?: number;
 };
 
@@ -74,7 +74,7 @@ export type TrackedRecommendation = {
   risk: "low" | "medium" | "high";
   applied: boolean;
   outcome?: "effective" | "reverted" | "neutral" | "pending";
-  outcomeTimestamp?: string;
+  outcomeAt?: string;
 };
 
 export type OagDiagnosisRecord = {
@@ -92,7 +92,7 @@ export type OagDiagnosisRecord = {
     applied: boolean;
     recommendationId?: string;
     outcome?: "effective" | "reverted" | "neutral" | "pending";
-    outcomeTimestamp?: string;
+    outcomeAt?: string;
   }>;
   trackedRecommendations?: TrackedRecommendation[];
   completedAt: string;
@@ -158,8 +158,9 @@ function ensureAuditLog(memory: OagMemory): OagMemory {
 // ---------------------------------------------------------------------------
 let _writeChain: Promise<void> = Promise.resolve();
 
+// Callback returning false skips the save (useful when no mutation occurred).
 export async function withOagMemory(
-  fn: (memory: OagMemory) => void | Promise<void>,
+  fn: (memory: OagMemory) => boolean | void | Promise<boolean | void>,
 ): Promise<void> {
   const prior = _writeChain;
   let release!: () => void;
@@ -169,8 +170,10 @@ export async function withOagMemory(
   try {
     await prior;
     const memory = await loadOagMemory();
-    await fn(memory);
-    await saveOagMemory(memory);
+    const result = await fn(memory);
+    if (result !== false) {
+      await saveOagMemory(memory);
+    }
   } finally {
     release();
   }
@@ -286,25 +289,26 @@ export async function updateRecommendationOutcome(
   let updated = false;
   await withOagMemory((memory) => {
     const diagnosis = memory.diagnoses.find((d) => d.id === diagnosisId);
+    // Return false so the mutex skips the save when nothing was mutated.
     if (!diagnosis) {
-      return;
+      return false;
     }
     const now = new Date().toISOString();
-    for (const rec of diagnosis.recommendations) {
+    diagnosis.recommendations = diagnosis.recommendations.map((rec) => {
       if (rec.recommendationId === recommendationId) {
-        rec.outcome = outcome;
-        rec.outcomeTimestamp = now;
         updated = true;
+        return { ...rec, outcome, outcomeAt: now };
       }
-    }
+      return rec;
+    });
     if (diagnosis.trackedRecommendations) {
-      for (const tr of diagnosis.trackedRecommendations) {
+      diagnosis.trackedRecommendations = diagnosis.trackedRecommendations.map((tr) => {
         if (tr.id === recommendationId) {
-          tr.outcome = outcome;
-          tr.outcomeTimestamp = now;
           updated = true;
+          return { ...tr, outcome, outcomeAt: now };
         }
-      }
+        return tr;
+      });
     }
   });
   return updated;

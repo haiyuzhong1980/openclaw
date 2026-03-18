@@ -45,8 +45,10 @@ const {
   composeDiagnosisPrompt,
   parseDiagnosisResponse,
   requestDiagnosis,
+  completeDiagnosis,
   sanitizeForPrompt,
   buildHistoricalRecommendations,
+  getDiagnosisModelConfig,
 } = await import("./oag-diagnosis.js");
 
 describe("oag-diagnosis", () => {
@@ -270,7 +272,7 @@ describe("oag-diagnosis", () => {
                 risk: "low" as const,
                 applied: true,
                 outcome: "reverted" as const,
-                outcomeTimestamp: "2026-03-16T02:00:00Z",
+                outcomeAt: "2026-03-16T02:00:00Z",
               },
             ],
             completedAt: "2026-03-16T01:00:00Z",
@@ -314,6 +316,145 @@ describe("oag-diagnosis", () => {
       const result = buildHistoricalRecommendations(memory as never);
       const lines = result.split("\n").filter((l) => l.length > 0);
       expect(lines.length).toBeLessThanOrEqual(10);
+    });
+  });
+
+  describe("getDiagnosisModelConfig", () => {
+    it("returns lightweight mode by default when config is undefined", () => {
+      const config = getDiagnosisModelConfig();
+      expect(config.mode).toBe("lightweight");
+      expect(config.useEmbeddedRunner).toBe(false);
+    });
+
+    it("returns lightweight mode when gateway.oag is absent", () => {
+      const config = getDiagnosisModelConfig({ gateway: {} });
+      expect(config.mode).toBe("lightweight");
+      expect(config.useEmbeddedRunner).toBe(false);
+    });
+
+    it("returns lightweight mode when diagnosis section is absent", () => {
+      const config = getDiagnosisModelConfig({ gateway: { oag: {} } });
+      expect(config.mode).toBe("lightweight");
+      expect(config.useEmbeddedRunner).toBe(false);
+    });
+
+    it("returns lightweight mode when model is explicitly set to lightweight", () => {
+      const config = getDiagnosisModelConfig({
+        gateway: { oag: { diagnosis: { model: "lightweight" } } },
+      });
+      expect(config.mode).toBe("lightweight");
+      expect(config.useEmbeddedRunner).toBe(false);
+    });
+
+    it("returns embedded mode when model is set to embedded", () => {
+      const config = getDiagnosisModelConfig({
+        gateway: { oag: { diagnosis: { model: "embedded" } } },
+      });
+      expect(config.mode).toBe("embedded");
+      expect(config.useEmbeddedRunner).toBe(true);
+    });
+
+    it("returns lightweight mode for unrecognized model values", () => {
+      const config = getDiagnosisModelConfig({
+        gateway: { oag: { diagnosis: { model: "unknown" as "lightweight" } } },
+      });
+      expect(config.mode).toBe("lightweight");
+      expect(config.useEmbeddedRunner).toBe(false);
+    });
+  });
+
+  describe("completeDiagnosis", () => {
+    const validResponse = JSON.stringify({
+      rootCause: "Rate limit exceeded",
+      analysis: "Detailed analysis",
+      confidence: 0.85,
+      recommendations: [
+        {
+          type: "config_change",
+          description: "Increase budget",
+          configPath: "gateway.oag.delivery.recoveryBudgetMs",
+          suggestedValue: 120000,
+          risk: "low",
+        },
+      ],
+      preventive: "Add rate limiting",
+    });
+
+    it("updates the diagnosis record on successful completion", async () => {
+      const diagId = "diag-complete-1";
+      mockMemory.current.diagnoses = [
+        {
+          id: diagId,
+          triggeredAt: "2026-03-17T00:00:00Z",
+          trigger: "recurring_pattern",
+          rootCause: "pending agent analysis",
+          confidence: 0,
+          recommendations: [],
+          completedAt: "",
+        },
+      ];
+
+      const result = await completeDiagnosis(diagId, validResponse);
+
+      expect(result).not.toBeNull();
+      expect(result!.rootCause).toBe("Rate limit exceeded");
+      expect(result!.confidence).toBe(0.85);
+      // Verify the record was updated in memory
+      const saved = mockMemory.current.diagnoses.find(
+        (d) => (d as { id: string }).id === diagId,
+      ) as { rootCause: string; confidence: number; recommendations: unknown[] };
+      expect(saved.rootCause).toBe("Rate limit exceeded");
+      expect(saved.confidence).toBe(0.85);
+      expect(saved.recommendations).toHaveLength(1);
+    });
+
+    it("is a no-op when diagnosisId is not found in memory", async () => {
+      mockMemory.current.diagnoses = [
+        {
+          id: "diag-other",
+          triggeredAt: "2026-03-17T00:00:00Z",
+          trigger: "recurring_pattern",
+          rootCause: "pending",
+          confidence: 0,
+          recommendations: [],
+          completedAt: "",
+        },
+      ];
+
+      const result = await completeDiagnosis("diag-nonexistent", validResponse);
+
+      // Parsing succeeds but no record is updated
+      expect(result).not.toBeNull();
+      // Original record unchanged
+      const original = mockMemory.current.diagnoses[0] as { rootCause: string };
+      expect(original.rootCause).toBe("pending");
+    });
+
+    it("sets completedAt timestamp on the updated record", async () => {
+      const diagId = "diag-complete-ts";
+      mockMemory.current.diagnoses = [
+        {
+          id: diagId,
+          triggeredAt: "2026-03-17T00:00:00Z",
+          trigger: "adaptation_failed",
+          rootCause: "pending agent analysis",
+          confidence: 0,
+          recommendations: [],
+          completedAt: "",
+        },
+      ];
+
+      const before = Date.now();
+      await completeDiagnosis(diagId, validResponse);
+      const after = Date.now();
+
+      const saved = mockMemory.current.diagnoses.find(
+        (d) => (d as { id: string }).id === diagId,
+      ) as { completedAt: string };
+      expect(saved.completedAt).toBeTruthy();
+      const completedMs = Date.parse(saved.completedAt);
+      expect(completedMs).toBeGreaterThanOrEqual(before);
+      expect(completedMs).toBeLessThanOrEqual(after);
     });
   });
 });

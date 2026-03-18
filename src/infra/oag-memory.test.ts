@@ -382,7 +382,7 @@ describe("oag-memory", () => {
       const diag = memory.diagnoses.find((d) => d.id === "diag-outcome-1");
       expect(diag).toBeDefined();
       expect(diag!.recommendations[0].outcome).toBe("effective");
-      expect(diag!.recommendations[0].outcomeTimestamp).toBeDefined();
+      expect(diag!.recommendations[0].outcomeAt).toBeDefined();
     });
 
     it("updates outcome for a tracked recommendation", async () => {
@@ -417,7 +417,7 @@ describe("oag-memory", () => {
       const memory = await loadOagMemory();
       const diag = memory.diagnoses.find((d) => d.id === "diag-outcome-2");
       expect(diag!.trackedRecommendations![0].outcome).toBe("reverted");
-      expect(diag!.trackedRecommendations![0].outcomeTimestamp).toBeDefined();
+      expect(diag!.trackedRecommendations![0].outcomeAt).toBeDefined();
     });
 
     it("returns false when diagnosis not found", async () => {

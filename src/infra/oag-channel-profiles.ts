@@ -104,3 +104,109 @@ export function isPollingChannel(channelId: string): boolean {
 export function isPassiveChannel(channelId: string): boolean {
   return resolveChannelTransport(channelId) === "webhook";
 }
+
+// ---------------------------------------------------------------------------
+// Channel-specific anomaly detection baselines
+// Different channels have different "normal" error profiles. These baselines
+// let OAG distinguish expected noise from real anomalies.
+// ---------------------------------------------------------------------------
+
+/** Per-incident-type baseline: expected count per hour and acceptable variance. */
+export type Baseline = {
+  /** Expected incidents per hour under normal operation. */
+  expectedPerHour: number;
+  /** Standard deviation -- used to compute dynamic thresholds. */
+  stddev: number;
+  /** Human-readable note explaining why this baseline exists. */
+  note: string;
+};
+
+// Z-score thresholds: noisier channels tolerate higher scores before alerting.
+const CHANNEL_ANOMALY_THRESHOLDS: Record<string, number> = {
+  discord: 2.5, // rate limit bursts are common
+  slack: 2.5, // WebSocket 408 reconnects are frequent
+  signal: 2.0, // low-traffic daemon; raised from 1.5 to reduce false positives
+};
+
+const DEFAULT_ANOMALY_THRESHOLD = 2.0;
+
+/**
+ * Returns the Z-score threshold above which an incident rate is considered
+ * anomalous for the given channel. Higher = more tolerant of noise.
+ */
+export function getChannelAnomalyThreshold(channel: string): number {
+  return CHANNEL_ANOMALY_THRESHOLDS[channel] ?? DEFAULT_ANOMALY_THRESHOLD;
+}
+
+// Channel-specific factory baselines keyed by incident type.
+const CHANNEL_BASELINES: Record<string, Record<string, Baseline>> = {
+  discord: {
+    rate_limit: {
+      expectedPerHour: 12,
+      stddev: 5,
+      note: "Discord rate limits fire frequently under normal bot traffic",
+    },
+    auth_resource: {
+      expectedPerHour: 0.1,
+      stddev: 0.2,
+      note: "Code 4014 (disallowed intents) -- rare, flag quickly",
+    },
+  },
+  telegram: {
+    poll_stall: {
+      expectedPerHour: 2,
+      stddev: 1.5,
+      note: "Long-poll stalls are channel-specific and expected periodically",
+    },
+    network_timeout: {
+      expectedPerHour: 4,
+      stddev: 2,
+      note: "Telegram API timeouts higher than other channels",
+    },
+  },
+  signal: {
+    general: {
+      expectedPerHour: 0.5,
+      stddev: 0.3,
+      note: "Low traffic daemon -- any incident is more significant",
+    },
+  },
+  slack: {
+    websocket_408: {
+      expectedPerHour: 6,
+      stddev: 3,
+      note: "WebSocket 408 timeout/reconnect is a common Slack pattern",
+    },
+    reconnect: {
+      expectedPerHour: 3,
+      stddev: 2,
+      note: "Slack reconnects are frequent; higher baseline than other WS channels",
+    },
+  },
+  whatsapp: {
+    auth_pairing: {
+      expectedPerHour: 2,
+      stddev: 1,
+      note: "Session rotation is normal for WhatsApp Web multi-device pairing",
+    },
+  },
+  web: {
+    auth_pairing: {
+      expectedPerHour: 2,
+      stddev: 1,
+      note: "Session rotation is normal for WhatsApp Web multi-device pairing",
+    },
+  },
+};
+
+/**
+ * Returns channel-specific factory baselines keyed by incident type,
+ * or undefined for channels without pre-defined baselines.
+ */
+export function getChannelBaselines(channel: string): Record<string, Baseline> | undefined {
+  const baselines = CHANNEL_BASELINES[channel];
+  if (!baselines) {
+    return undefined;
+  }
+  return { ...baselines };
+}

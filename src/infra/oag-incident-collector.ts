@@ -1,9 +1,12 @@
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { emitOagEvent } from "./oag-event-bus.js";
 import type { OagIncident } from "./oag-memory.js";
 
+const log = createSubsystemLogger("oag/incident-collector");
+
 const activeIncidents = new Map<string, OagIncident>();
 
-const MAX_ACTIVE_INCIDENTS = 100;
+const MAX_ACTIVE_INCIDENTS = 1000;
 
 export function recordOagIncident(
   incident: Omit<OagIncident, "firstAt" | "lastAt" | "count">,
@@ -27,18 +30,13 @@ export function recordOagIncident(
     });
   }
   if (activeIncidents.size > MAX_ACTIVE_INCIDENTS) {
-    // Evict the oldest incident by firstAt
-    let oldestKey: string | null = null;
-    let oldestTime = Infinity;
-    for (const [k, inc] of activeIncidents) {
-      const t = Date.parse(inc.firstAt);
-      if (t < oldestTime) {
-        oldestTime = t;
-        oldestKey = k;
-      }
-    }
-    if (oldestKey) {
+    // Maps preserve insertion order; evict the oldest entry (first key) to stay under cap.
+    const oldestKey = activeIncidents.keys().next().value;
+    if (oldestKey !== undefined) {
       activeIncidents.delete(oldestKey);
+      log.warn(
+        `activeIncidents cap (${MAX_ACTIVE_INCIDENTS}) reached; evicted oldest incident key="${oldestKey}"`,
+      );
     }
   }
   emitOagEvent("incident_recorded", {
@@ -59,7 +57,7 @@ export function clearActiveIncidents(): void {
 export function resolveIncidentOutcome(key: string, recoveryMs: number): void {
   const existing = activeIncidents.get(key);
   if (existing) {
-    existing.resolvedAt = Date.now();
+    existing.resolvedAt = new Date().toISOString();
     existing.recoveryMs = recoveryMs;
   }
 }

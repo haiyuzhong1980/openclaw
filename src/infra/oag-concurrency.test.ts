@@ -88,7 +88,8 @@ vi.mock("./oag-config-writer.js", () => ({
   applyOagConfigChanges: vi.fn(async () => ({ applied: true })),
 }));
 
-const { loadOagMemory, saveOagMemory, recordLifecycleShutdown } = await import("./oag-memory.js");
+const { loadOagMemory, saveOagMemory, recordLifecycleShutdown, withOagMemory } =
+  await import("./oag-memory.js");
 const { recordOagIncident, collectActiveIncidents, clearActiveIncidents } =
   await import("./oag-incident-collector.js");
 const { startEvolutionObservation, getActiveObservation, clearObservation } =
@@ -333,6 +334,27 @@ describe("OAG concurrency tests", () => {
       expect(obs).not.toBeNull();
       // The last observation's rollback value should be 60000 + 4*10000 = 100000
       expect(obs!.rollbackChanges[0].previousValue).toBe(100_000);
+    });
+  });
+
+  describe("withOagMemory exception recovery", () => {
+    it("propagates errors from fn and does not stall the chain", async () => {
+      // First call: fn throws
+      await expect(
+        withOagMemory(() => {
+          throw new Error("deliberate failure");
+        }),
+      ).rejects.toThrow("deliberate failure");
+
+      // Second call: fn succeeds -- chain must not be stalled by the prior throw
+      let reached = false;
+      await expect(
+        withOagMemory(() => {
+          reached = true;
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(reached).toBe(true);
     });
   });
 });

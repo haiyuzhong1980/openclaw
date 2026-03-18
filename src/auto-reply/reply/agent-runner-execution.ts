@@ -85,7 +85,7 @@ export type AgentRunLoopResult =
 const ARGUS_RECOVERABLE_FAILOVER_REASONS = new Set(["rate_limit", "overloaded", "timeout"]);
 
 function resolveArgusResumeDelayMs(reason: "rate_limit" | "overloaded" | "timeout"): number {
-  const fastTestMode = process.env.OPENCLAW_TEST_FAST === "1";
+  const fastTestMode = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
   if (fastTestMode) {
     if (reason === "timeout") {
       return 15;

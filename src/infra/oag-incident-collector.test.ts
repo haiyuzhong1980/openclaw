@@ -103,7 +103,7 @@ describe("oag-incident-collector", () => {
     resolveIncidentOutcome("channel_crash_loop:telegram", 1500);
     const incidents = collectActiveIncidents();
     expect(incidents[0].recoveryMs).toBe(1500);
-    expect(incidents[0].resolvedAt).toBeTypeOf("number");
+    expect(incidents[0].resolvedAt).toBeTypeOf("string");
   });
 
   it("resolveIncidentOutcome is a no-op for unknown keys", () => {

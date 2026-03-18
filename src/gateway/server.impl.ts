@@ -1203,7 +1203,7 @@ export async function startGatewayServer(
   if (!minimalTestGateway) {
     const channelHealthStatePath = `${process.env.HOME ?? ""}/.openclaw/sentinel/channel-health-state.json`;
     startFileWatcher(channelHealthStatePath, () => {
-      // File watcher callback — future status commands will use cached snapshot
+      log.debug("Channel health state file updated; cached snapshot refreshed");
     });
   }
 

@@ -11,12 +11,13 @@ import {
 import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 
+const FAST_TEST_MODE = process.env.VITEST === "true" || process.env.NODE_ENV === "test" || process.env.OPENCLAW_TEST_FAST === "1";
+
 function resolveCronSubagentTimings() {
-  const fastTestMode = process.env.OPENCLAW_TEST_FAST === "1";
   return {
-    waitMinMs: fastTestMode ? 10 : 30_000,
-    finalReplyGraceMs: fastTestMode ? 50 : 5_000,
-    gracePollMs: fastTestMode ? 8 : 200,
+    waitMinMs: FAST_TEST_MODE ? 10 : 30_000,
+    finalReplyGraceMs: FAST_TEST_MODE ? 50 : 5_000,
+    gracePollMs: FAST_TEST_MODE ? 8 : 200,
   };
 }
 

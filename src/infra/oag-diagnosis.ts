@@ -1,11 +1,12 @@
 import { loadConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   type OagDiagnosisRecord,
   type OagMemory,
   loadOagMemory,
   recordDiagnosis,
-  saveOagMemory,
+  withOagMemory,
 } from "./oag-memory.js";
 import { getOagMetrics } from "./oag-metrics.js";
 
@@ -58,6 +59,29 @@ export type DiagnosisResult = {
   recommendations: DiagnosisRecommendation[];
   preventive?: string;
 };
+
+export type DiagnosisModelConfig = {
+  /** Which model mode to use: lightweight (built-in) or embedded (user's configured LLM). */
+  mode: "lightweight" | "embedded";
+  /** @experimental - "embedded" announced but not yet wired */
+  useEmbeddedRunner: boolean;
+};
+
+/**
+ * Resolves which model should be used for OAG diagnosis.
+ * If `gateway.oag.diagnosis.model` is "embedded", returns embedded mode so
+ * callers can dispatch to the user's configured LLM. Otherwise returns
+ * lightweight mode (default -- no behavior change for existing users).
+ *
+ * @experimental Embedded mode is announced but not yet wired to the embedded runner.
+ */
+export function getDiagnosisModelConfig(cfg?: OpenClawConfig): DiagnosisModelConfig {
+  const model = cfg?.gateway?.oag?.diagnosis?.model;
+  if (model === "embedded") {
+    return { mode: "embedded", useEmbeddedRunner: true };
+  }
+  return { mode: "lightweight", useEmbeddedRunner: false };
+}
 
 function shouldRunDiagnosis(memory: OagMemory, trigger: DiagnosisTrigger): boolean {
   const recentDiagnoses = memory.diagnoses.filter((d) => {
@@ -195,6 +219,13 @@ export async function requestDiagnosis(trigger: DiagnosisTrigger): Promise<{
     return { ran: false };
   }
 
+  const cfg = loadConfig();
+  if (getDiagnosisModelConfig(cfg).useEmbeddedRunner) {
+    log.warn(
+      "oag.diagnosis.model=embedded is experimental and not yet wired to the embedded runner; using lightweight diagnosis",
+    );
+  }
+
   const prompt = composeDiagnosisPrompt(trigger, memory);
 
   log.info(`OAG diagnosis triggered: ${trigger.type} — ${trigger.description}`);
@@ -226,36 +257,39 @@ export async function completeDiagnosis(
     return null;
   }
 
-  // Update the diagnosis record in memory
-  const memory = await loadOagMemory();
-  const record = memory.diagnoses.find((d) => d.id === diagnosisId);
-  if (record) {
-    record.rootCause = result.rootCause;
-    record.confidence = result.confidence;
-    record.recommendations = result.recommendations.map((r, i) => ({
-      ...r,
-      applied: false,
-      recommendationId: `${diagnosisId}-rec-${i}`,
-      outcome: "pending" as const,
-    }));
-    record.trackedRecommendations = result.recommendations
-      .filter((r) => r.type === "config_change" && r.configPath)
-      .map((r, i) => ({
-        id: `${diagnosisId}-rec-${i}`,
-        parameter: r.configPath ?? "",
-        oldValue: undefined,
-        newValue: r.suggestedValue,
-        risk: r.risk,
-        applied: false,
-        outcome: "pending" as const,
-      }));
-    record.completedAt = new Date().toISOString();
+  // Update the diagnosis record in memory via the serialized write chain
+  await withOagMemory((memory) => {
     const idx = memory.diagnoses.findIndex((d) => d.id === diagnosisId);
-    if (idx >= 0) {
-      memory.diagnoses[idx] = record;
-      await saveOagMemory(memory);
+    if (idx < 0) {
+      return false; // skip save when diagnosis not found
     }
-  }
+    const record = memory.diagnoses[idx];
+    const updated: OagDiagnosisRecord = {
+      ...record,
+      rootCause: result.rootCause,
+      confidence: result.confidence,
+      recommendations: result.recommendations.map((r, i) => ({
+        ...r,
+        applied: false,
+        recommendationId: `${diagnosisId}-rec-${i}`,
+        outcome: "pending" as const,
+      })),
+      trackedRecommendations: result.recommendations
+        .map((r, i) => ({ ...r, _origIdx: i }))
+        .filter((r) => r.type === "config_change" && r.configPath)
+        .map((r) => ({
+          id: `${diagnosisId}-rec-${r._origIdx}`,
+          parameter: r.configPath ?? "",
+          oldValue: undefined,
+          newValue: r.suggestedValue,
+          risk: r.risk,
+          applied: false,
+          outcome: "pending" as const,
+        })),
+      completedAt: new Date().toISOString(),
+    };
+    memory.diagnoses[idx] = updated;
+  });
 
   log.info(
     `Diagnosis ${diagnosisId} completed: ${result.rootCause} (confidence: ${result.confidence})`,

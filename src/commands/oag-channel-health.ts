@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { getCachedHealthSnapshot } from "../infra/oag-event-bus.js";
+import { getCachedHealthSnapshot, startFileWatcher } from "../infra/oag-event-bus.js";
 
 export type OagChannelHealthSummary = {
   schemaVersion?: number;
@@ -351,6 +351,13 @@ export async function readOagChannelHealthSummary(): Promise<OagChannelHealthSum
   if (!statePath) {
     return undefined;
   }
+  // Populate the cache via an initial sync read. In the gateway process the
+  // watcher is already running (started in server.impl.ts) and startFileWatcher
+  // returns a no-op; in CLI processes this triggers the initial read that fills
+  // cachedSnapshot. Either way we immediately release the returned teardown so
+  // a CLI one-shot command does not leave a persistent file watcher open.
+  const stopWatcher = startFileWatcher(statePath, () => {});
+  stopWatcher();
   // Fast path: use cached snapshot from event bus if available
   const cached = getCachedHealthSnapshot();
   if (cached) {

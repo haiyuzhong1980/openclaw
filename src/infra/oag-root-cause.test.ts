@@ -98,17 +98,15 @@ describe("oag-root-cause", () => {
   });
 
   it("classifies LLM timeout", () => {
-    // "timed out" matches the generic network_timeout pattern first;
-    // the specific "LLM request timed out" pattern only triggers when
-    // the generic one doesn't match.
+    // LLM-specific pattern now precedes the generic timeout pattern
     const result = classifyRootCause("LLM request timed out after 30000ms");
-    expect(result.cause).toBe("network_timeout");
+    expect(result.cause).toBe("llm_timeout");
     expect(result.category).toBe("network");
   });
 
   it("classifies exact LLM timeout phrasing", () => {
     const result = classifyRootCause("LLM request timed out");
-    expect(result.cause).toBe("network_timeout");
+    expect(result.cause).toBe("llm_timeout");
     expect(result.category).toBe("network");
   });
 
@@ -268,7 +266,7 @@ describe("oag-root-cause", () => {
   });
 
   it("classifies resource not granted as auth_resource", () => {
-    const result = classifyRootCause("resource not granted, code 3001");
+    const result = classifyRootCause("resource not granted, close code 3001");
     expect(result.cause).toBe("auth_resource");
     expect(result.category).toBe("auth_failure");
   });

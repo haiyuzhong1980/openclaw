@@ -177,8 +177,8 @@ describe("OAG simulation — Part A: root cause coverage (GitHub issues)", () =>
   // missing controlUi.allowedOrigins migration — no pattern should match but classifier should not throw
   it("missing migration message — no crash, returns known cause or unknown", () => {
     const r = classifyRootCause("missing controlUi.allowedOrigins migration");
-    // The string contains "missing" but no strong pattern; expect config_missing_module or unknown
-    expect(["config_missing_module", "unknown"]).toContain(r.cause);
+    // Now matches the migration gap pattern → config_invalid_json; also accept config_missing_module or unknown
+    expect(["config_invalid_json", "config_missing_module", "unknown"]).toContain(r.cause);
     expect(r.confidence).toBeGreaterThanOrEqual(0);
   });
 

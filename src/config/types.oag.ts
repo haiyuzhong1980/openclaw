@@ -15,6 +15,11 @@ export type OagConfig = {
     maxDeliveredHistory?: number;
   };
   evolution?: {
+    /**
+     * Whether OAG may automatically apply low-risk config suggestions without operator review.
+     * Default: false (opt-in: operators must explicitly enable auto-application of OAG suggestions).
+     */
+    autoApply?: boolean;
     /** Max single-step change as a percentage of the current value (default: 50). */
     maxStepPercent?: number;
     /** Max cumulative change as a percentage of the original value (default: 200). */
@@ -43,6 +48,10 @@ export type OagConfig = {
   memory?: {
     /** Maximum age for lifecycle records in days (default: 30). */
     maxLifecycleAgeDays?: number;
+  };
+  diagnosis?: {
+    /** Which model to use for OAG diagnosis: "lightweight" (built-in) or "embedded" (user's configured LLM). */
+    model?: "lightweight" | "embedded";
   };
   /** Per-channel OAG overrides keyed by channel id (e.g. "telegram", "discord"). */
   channels?: Record<string, Partial<OagConfig>>;
