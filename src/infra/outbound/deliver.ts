@@ -762,6 +762,7 @@ async function deliverOutboundPayloadsCore(
   const normalizedPayloads = normalizePayloadsForChannelDelivery(payloads, channel);
   const failedPayloadIndexes = new Set<number>();
   const deliveredPayloadIndexes = new Set<number>();
+  const cancelledPayloadIndexes = new Set<number>();
   const hookRunner = getGlobalHookRunner();
   const sessionKeyForInternalHooks = params.mirror?.sessionKey ?? params.session?.key;
   const mirrorIsGroup = params.mirror?.isGroup;
@@ -802,6 +803,7 @@ async function deliverOutboundPayloadsCore(
         accountId,
       });
       if (hookResult.cancelled) {
+        cancelledPayloadIndexes.add(payloadIndex);
         continue;
       }
       const effectivePayload = hookResult.payload;
@@ -910,7 +912,8 @@ async function deliverOutboundPayloadsCore(
     params.captureRetryPayloads?.(
       normalizedPayloads.filter(
         (_candidate, index) =>
-          failedPayloadIndexes.has(index) || !deliveredPayloadIndexes.has(index),
+          (failedPayloadIndexes.has(index) || !deliveredPayloadIndexes.has(index)) &&
+          !cancelledPayloadIndexes.has(index),
       ),
     );
   }

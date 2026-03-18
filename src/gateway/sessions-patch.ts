@@ -165,11 +165,11 @@ export async function applySessionsPatchToStore(params: {
         return invalid('invalid argusMainlineState (use "active"|"protected")');
       }
       const protectMinutes = patch.argusProtectMinutes ?? 30;
-      nextArgus = nextArgus ?? {
-        mainlineState: normalized,
-        protectUntil: now + Number(protectMinutes) * 60_000,
-      };
+      nextArgus = nextArgus ?? {};
       nextArgus.mainlineState = normalized;
+      if (normalized === "protected") {
+        nextArgus.protectUntil = now + Number(protectMinutes) * 60_000;
+      }
     }
   }
 
