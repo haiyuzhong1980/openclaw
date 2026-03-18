@@ -156,13 +156,16 @@ ${historicalRecs ? `\n## Previous Recommendation Outcomes\n${historicalRecs}` : 
 
 export function parseDiagnosisResponse(responseText: string): DiagnosisResult | null {
   try {
-    // Extract JSON from response (agent may wrap in markdown code blocks)
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    // Extract JSON from response (agent may wrap in ```json ... ``` fences).
+    // Try code-fence extraction first to avoid the greedy-regex multi-object
+    // problem; fall back to greedy match for plain JSON responses.
+    const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const jsonStr = fenceMatch ? fenceMatch[1] : responseText.match(/\{[\s\S]*\}/)?.[0];
+    if (!jsonStr) {
       log.warn("Diagnosis response contains no JSON object");
       return null;
     }
-    const parsed = JSON.parse(jsonMatch[0]) as DiagnosisResult;
+    const parsed = JSON.parse(jsonStr) as DiagnosisResult;
     if (
       typeof parsed.rootCause !== "string" ||
       typeof parsed.confidence !== "number" ||
@@ -184,6 +187,7 @@ export async function requestDiagnosis(trigger: DiagnosisTrigger): Promise<{
   ran: boolean;
   result?: DiagnosisResult;
   record?: OagDiagnosisRecord;
+  prompt?: string;
 }> {
   const memory = await loadOagMemory();
 
@@ -195,10 +199,9 @@ export async function requestDiagnosis(trigger: DiagnosisTrigger): Promise<{
 
   log.info(`OAG diagnosis triggered: ${trigger.type} — ${trigger.description}`);
 
-  // Store the prompt for future agent dispatch.
-  // Actual agent invocation is wired by the gateway startup path
-  // (which has access to the agent infrastructure).
-  // This module produces the prompt and parses the response.
+  // Actual agent invocation is wired by the gateway startup path via
+  // registerDiagnosisDispatch(). The prompt is returned so callers can
+  // attempt live dispatch when the dispatch function is available.
   const record: OagDiagnosisRecord = {
     id: `diag-${Date.now()}`,
     triggeredAt: new Date().toISOString(),
@@ -209,12 +212,9 @@ export async function requestDiagnosis(trigger: DiagnosisTrigger): Promise<{
     completedAt: "",
   };
 
-  // Suppress unused variable warning — prompt is returned for agent dispatch
-  void prompt;
-
   await recordDiagnosis(record);
 
-  return { ran: true, record };
+  return { ran: true, record, prompt };
 }
 
 export async function completeDiagnosis(

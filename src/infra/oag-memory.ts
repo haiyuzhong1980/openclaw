@@ -150,6 +150,32 @@ function ensureAuditLog(memory: OagMemory): OagMemory {
   return memory;
 }
 
+// ---------------------------------------------------------------------------
+// In-process write serializer
+// Prevents last-write-wins data loss when multiple concurrent callers (e.g.
+// periodic checkpoint + evolution record) attempt load → mutate → save cycles.
+// All write helpers below go through this chain; reads remain unrestricted.
+// ---------------------------------------------------------------------------
+let _writeChain: Promise<void> = Promise.resolve();
+
+export async function withOagMemory(
+  fn: (memory: OagMemory) => void | Promise<void>,
+): Promise<void> {
+  const prior = _writeChain;
+  let release!: () => void;
+  _writeChain = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await prior;
+    const memory = await loadOagMemory();
+    await fn(memory);
+    await saveOagMemory(memory);
+  } finally {
+    release();
+  }
+}
+
 export async function loadOagMemory(): Promise<OagMemory> {
   const filePath = resolveMemoryPath();
   // Try main file first
@@ -205,55 +231,51 @@ export async function recordLifecycleShutdown(params: {
   cfg?: OpenClawConfig;
   sentinelContext?: SentinelContext;
 }): Promise<void> {
-  const memory = await loadOagMemory();
-  const now = Date.now();
-  const lifecycle: OagLifecycle = {
-    id: `gw-${now}`,
-    startedAt: new Date(params.startedAt).toISOString(),
-    stoppedAt: new Date(now).toISOString(),
-    stopReason: params.stopReason,
-    uptimeMs: now - params.startedAt,
-    metricsSnapshot: params.metricsSnapshot,
-    incidents: params.incidents,
-  };
-  if (params.sentinelContext) {
-    lifecycle.sentinelContext = params.sentinelContext;
-  }
-  memory.lifecycles.push(lifecycle);
-  pruneOldLifecycles(memory, params.cfg);
-  await saveOagMemory(memory);
+  await withOagMemory((memory) => {
+    const now = Date.now();
+    const lifecycle: OagLifecycle = {
+      id: `gw-${now}`,
+      startedAt: new Date(params.startedAt).toISOString(),
+      stoppedAt: new Date(now).toISOString(),
+      stopReason: params.stopReason,
+      uptimeMs: now - params.startedAt,
+      metricsSnapshot: params.metricsSnapshot,
+      incidents: params.incidents,
+    };
+    if (params.sentinelContext) {
+      lifecycle.sentinelContext = params.sentinelContext;
+    }
+    memory.lifecycles.push(lifecycle);
+    pruneOldLifecycles(memory, params.cfg);
+  });
 }
 
 export async function recordEvolution(record: OagEvolutionRecord): Promise<void> {
-  const memory = await loadOagMemory();
-  memory.evolutions.push(record);
-  // Keep last 50 evolution records
-  memory.evolutions = memory.evolutions.slice(-50);
-  await saveOagMemory(memory);
+  await withOagMemory((memory) => {
+    memory.evolutions.push(record);
+    memory.evolutions = memory.evolutions.slice(-50);
+  });
 }
 
 export async function recordDiagnosis(record: OagDiagnosisRecord): Promise<void> {
-  const memory = await loadOagMemory();
-  memory.diagnoses.push(record);
-  // Keep last 20 diagnosis records
-  memory.diagnoses = memory.diagnoses.slice(-20);
-  await saveOagMemory(memory);
+  await withOagMemory((memory) => {
+    memory.diagnoses.push(record);
+    memory.diagnoses = memory.diagnoses.slice(-20);
+  });
 }
 
 export async function appendAuditEntry(entry: OagAuditEntry): Promise<void> {
-  const memory = await loadOagMemory();
-  memory.auditLog.push(entry);
-  // Cap at MAX_AUDIT_LOG_ENTRIES, keeping the most recent entries
-  memory.auditLog = memory.auditLog.slice(-MAX_AUDIT_LOG_ENTRIES);
-  await saveOagMemory(memory);
+  await withOagMemory((memory) => {
+    memory.auditLog.push(entry);
+    memory.auditLog = memory.auditLog.slice(-MAX_AUDIT_LOG_ENTRIES);
+  });
 }
 
 export async function appendMetricSnapshot(snapshot: MetricSnapshot): Promise<void> {
-  const memory = await loadOagMemory();
-  memory.metricSeries.push(snapshot);
-  // Cap at MAX_METRIC_SERIES (168 = 7 days hourly), keeping most recent
-  memory.metricSeries = memory.metricSeries.slice(-MAX_METRIC_SERIES);
-  await saveOagMemory(memory);
+  await withOagMemory((memory) => {
+    memory.metricSeries.push(snapshot);
+    memory.metricSeries = memory.metricSeries.slice(-MAX_METRIC_SERIES);
+  });
 }
 
 export async function updateRecommendationOutcome(
@@ -261,39 +283,30 @@ export async function updateRecommendationOutcome(
   recommendationId: string,
   outcome: "effective" | "reverted" | "neutral" | "pending",
 ): Promise<boolean> {
-  const memory = await loadOagMemory();
-  const diagnosis = memory.diagnoses.find((d) => d.id === diagnosisId);
-  if (!diagnosis) {
-    return false;
-  }
-
   let updated = false;
-  const now = new Date().toISOString();
-
-  // Update in recommendations array
-  for (const rec of diagnosis.recommendations) {
-    if (rec.recommendationId === recommendationId) {
-      rec.outcome = outcome;
-      rec.outcomeTimestamp = now;
-      updated = true;
+  await withOagMemory((memory) => {
+    const diagnosis = memory.diagnoses.find((d) => d.id === diagnosisId);
+    if (!diagnosis) {
+      return;
     }
-  }
-
-  // Update in trackedRecommendations array
-  if (diagnosis.trackedRecommendations) {
-    for (const tr of diagnosis.trackedRecommendations) {
-      if (tr.id === recommendationId) {
-        tr.outcome = outcome;
-        tr.outcomeTimestamp = now;
+    const now = new Date().toISOString();
+    for (const rec of diagnosis.recommendations) {
+      if (rec.recommendationId === recommendationId) {
+        rec.outcome = outcome;
+        rec.outcomeTimestamp = now;
         updated = true;
       }
     }
-  }
-
-  if (updated) {
-    await saveOagMemory(memory);
-  }
-
+    if (diagnosis.trackedRecommendations) {
+      for (const tr of diagnosis.trackedRecommendations) {
+        if (tr.id === recommendationId) {
+          tr.outcome = outcome;
+          tr.outcomeTimestamp = now;
+          updated = true;
+        }
+      }
+    }
+  });
   return updated;
 }
 
@@ -331,7 +344,10 @@ export function findRecurringIncidentPattern(
   }[] = [];
   for (const [key, incidents] of grouped) {
     if (incidents.length >= minOccurrences) {
-      const [type, channel] = key.split(":");
+      // Split only on the first colon so channel names containing ":" are preserved.
+      const colonIdx = key.indexOf(":");
+      const type = colonIdx >= 0 ? key.slice(0, colonIdx) : key;
+      const channel = colonIdx >= 0 ? key.slice(colonIdx + 1) : undefined;
       patterns.push({
         type,
         channel: channel === "all" ? undefined : channel,

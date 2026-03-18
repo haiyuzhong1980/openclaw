@@ -23,6 +23,9 @@ export type CrashRootCause =
   | "agent_file_hallucination"
   | "agent_command_missing"
   | "agent_browser"
+  | "resource_oom"
+  | "resource_swap"
+  | "internal_segfault"
   | "internal_bug"
   | "unknown";
 
@@ -36,6 +39,7 @@ export type RootCauseResult = {
     | "config"
     | "lifecycle"
     | "agent"
+    | "resource_exhaustion"
     | "internal"
     | "unknown";
   shouldRetry: boolean;
@@ -58,6 +62,10 @@ const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
   [/resource not granted|code.*3001/i, "auth_resource", 0.85],
   [/token.*expired|token.*invalid/i, "auth_token_invalid", 0.9],
 
+  // Lifecycle-specific ETIMEDOUT patterns must precede the generic network ETIMEDOUT pattern
+  // so that "spawnSync launchctl ETIMEDOUT" routes to lifecycle, not network_timeout.
+  [/spawnSync launchctl ETIMEDOUT/i, "lifecycle_launchctl", 0.95],
+
   // Network (3,300+ real events)
   [/autoSelectFamily.*false.*ipv4first/i, "network_dns", 0.8],
   [/ENOTFOUND|getaddrinfo.*failed/i, "network_dns", 0.95],
@@ -78,7 +86,6 @@ const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
 
   // Lifecycle (32 real events, highest impact)
   [/GatewayDrainingError|draining for restart/i, "lifecycle_drain", 0.95],
-  [/spawnSync launchctl ETIMEDOUT/i, "lifecycle_launchctl", 0.95],
   [/kill-failed.*pid.*not found/i, "lifecycle_stale_pid", 0.9],
   [/address already in use|EADDRINUSE|Errno 48/i, "lifecycle_port_conflict", 0.95],
 
@@ -87,6 +94,26 @@ const ROOT_CAUSE_PATTERNS: Array<[RegExp, CrashRootCause, number]> = [
   [/ENOENT.*no such file/i, "agent_file_hallucination", 0.85],
   [/command not found/i, "agent_command_missing", 0.9],
   [/tab not found|Chrome CDP|Failed to start Chrome/i, "agent_browser", 0.9],
+
+  // Resource exhaustion (from GitHub issues #47430, #45440, #41778, #35773, #45160, #44790)
+  [/Out of memory|OOM|ENOMEM|heap out of memory/i, "resource_oom", 0.95],
+  [/Killed process.*total-vm|oom.?killer/i, "resource_oom", 0.9],
+  [/swap exhaustion|orphaned.*process/i, "resource_swap", 0.85],
+
+  // Discord close code 4014 — privileged intents not granted (from #21099)
+  [/Fatal Gateway error: 4014|close.*code.*4014/i, "auth_resource", 0.9],
+
+  // WebSocket 408 / unexpected server response (from #45852, #43689)
+  [/Unexpected server response: 408|WebSocket.*408/i, "network_timeout", 0.85],
+
+  // Config validation errors (from #29745, #40265)
+  [/Config invalid|Unrecognized key|config.*validation.*error/i, "config_invalid_json", 0.9],
+
+  // Stale lock / lock contention (from #49037)
+  [/stale lock|lock contention|lock file exists/i, "lifecycle_stale_pid", 0.85],
+
+  // Signal crashes: SIGILL / segfault (from #38260)
+  [/SIGILL|segfault|invalid opcode|SIGSEGV/i, "internal_segfault", 0.95],
 
   // Internal bugs
   [/TypeError|ReferenceError|SyntaxError/i, "internal_bug", 0.7],
@@ -120,6 +147,9 @@ const CATEGORY_MAP: Record<string, RootCauseResult["category"]> = {
   agent_file_hallucination: "agent",
   agent_command_missing: "agent",
   agent_browser: "agent",
+  resource_oom: "resource_exhaustion",
+  resource_swap: "resource_exhaustion",
+  internal_segfault: "internal",
   internal_bug: "internal",
   unknown: "unknown",
 };
@@ -135,6 +165,7 @@ const STRATEGY: Record<
   config: { shouldRetry: false, shouldNotifyOperator: true, shouldAdjustConfig: false },
   lifecycle: { shouldRetry: false, shouldNotifyOperator: true, shouldAdjustConfig: false },
   agent: { shouldRetry: false, shouldNotifyOperator: false, shouldAdjustConfig: false },
+  resource_exhaustion: { shouldRetry: false, shouldNotifyOperator: true, shouldAdjustConfig: true },
   internal: { shouldRetry: false, shouldNotifyOperator: true, shouldAdjustConfig: false },
   unknown: { shouldRetry: true, shouldNotifyOperator: false, shouldAdjustConfig: true },
 };

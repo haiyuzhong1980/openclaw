@@ -12,7 +12,6 @@ import {
   resolveOagDeliveryMaxRetries,
   resolveOagDeliveryRecoveryBudgetMs,
   resolveOagEvolutionCooldownMs,
-  resolveOagEvolutionMaxCumulativePercent,
   resolveOagEvolutionMaxNotificationsPerDay,
   resolveOagEvolutionMaxStepPercent,
   resolveOagEvolutionMinChannelIncidentsForAnalysis,
@@ -154,9 +153,8 @@ export type PostmortemResult = {
 };
 
 function clampChange(current: number, suggested: number, cfg: OpenClawConfig): number {
-  const maxCumulative = resolveOagEvolutionMaxCumulativePercent(cfg);
   const maxStep = resolveOagEvolutionMaxStepPercent(cfg);
-  const maxAllowed = current * (1 + maxCumulative / 100);
+  const maxAllowed = current * (1 + maxStep / 100);
   const minAllowed = current * (1 - maxStep / 100);
   return Math.max(minAllowed, Math.min(maxAllowed, suggested));
 }
@@ -344,9 +342,14 @@ export function maybeExplore(
   }
 
   const delta = recommendation.delta ?? recommendation.suggestedValue - recommendation.currentValue;
+  const exploredDelta = typeof delta === "number" ? -delta * 0.3 : delta;
   return {
     ...recommendation,
-    delta: typeof delta === "number" ? -delta * 0.3 : delta,
+    suggestedValue:
+      typeof exploredDelta === "number"
+        ? recommendation.currentValue + exploredDelta
+        : recommendation.suggestedValue,
+    delta: exploredDelta,
     source: "exploration",
   };
 }
@@ -525,16 +528,31 @@ export async function runPostRecoveryAnalysis(
         const primary = patternList[0];
         if (primary) {
           try {
-            await requestDiagnosis({
-              type: "recurring_pattern",
+            const diagTrigger = {
+              type: "recurring_pattern" as const,
               description: `Recurring ${primary.type} pattern (${primary.occurrences} occurrences) with no heuristic recommendation`,
               patternType: primary.type,
               channel: primary.channel,
               occurrences: primary.occurrences,
-            });
+            };
+            const diagResult = await requestDiagnosis(diagTrigger);
             log.info(
               "Escalated to agent diagnosis — heuristic analysis found patterns but no actionable recommendations",
             );
+            // Attempt live dispatch if the agent infrastructure is wired (best-effort, non-blocking)
+            if (diagResult.ran && diagResult.record) {
+              void (async () => {
+                try {
+                  const { dispatchDiagnosis, isDiagnosisDispatchRegistered } =
+                    await import("./oag-diagnosis-dispatch.js");
+                  if (isDiagnosisDispatchRegistered()) {
+                    await dispatchDiagnosis(diagTrigger, diagResult.record!.id);
+                  }
+                } catch {
+                  // dispatch unavailable — record remains pending
+                }
+              })();
+            }
           } catch (err) {
             log.warn(`Agent diagnosis request failed: ${String(err)}`);
           }
