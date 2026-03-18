@@ -29,6 +29,10 @@ type HeldLock = {
   argusProtectUntil?: number;
   argusRecoveryActive?: boolean;
   releasePromise?: Promise<void>;
+  /** Original session file path — used by watchdog to re-read Argus context. */
+  sessionFile: string;
+  /** Resolved sessions.json path — used by watchdog to re-read Argus context. */
+  sessionsStorePath?: string;
 };
 
 export type SessionLockInspection = {
@@ -217,6 +221,19 @@ async function runLockWatchdogCheck(nowMs = Date.now()): Promise<number> {
       (typeof held.argusProtectUntil === "number" && held.argusProtectUntil > nowMs) ||
       held.argusRecoveryActive
     ) {
+      continue;
+    }
+
+    // Re-read Argus protection: session may have been marked protected after lock acquisition
+    const freshArgus = await readArgusSessionContext({
+      sessionFile: held.sessionFile,
+      nowMs,
+      sessionsStorePath: held.sessionsStorePath,
+    });
+    if (freshArgus.argusProtected || freshArgus.argusRecoveryActive) {
+      // Update cached state so subsequent checks skip the re-read fast path
+      held.argusProtectUntil = freshArgus.argusProtectUntil;
+      held.argusRecoveryActive = freshArgus.argusRecoveryActive;
       continue;
     }
 
@@ -632,6 +649,8 @@ export async function acquireSessionWriteLock(params: {
         maxHoldMs,
         argusProtectUntil: argusContext.argusProtectUntil,
         argusRecoveryActive: argusContext.argusRecoveryActive,
+        sessionFile,
+        sessionsStorePath: params.sessionsStorePath,
       };
       HELD_LOCKS.set(normalizedSessionFile, createdHeld);
       return {

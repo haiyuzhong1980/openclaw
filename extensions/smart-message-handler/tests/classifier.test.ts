@@ -406,8 +406,9 @@ describe("classifyMessage", () => {
     expect(mc.confidence).toBe("high");
   });
 
-  it("score is 0 for chat pattern match", () => {
+  it("chat pattern match gets high confidence score", () => {
     const mc = classifyMessage("你好", DEFAULT_CONFIG);
-    expect(mc.score).toBe(0);
+    expect(mc.score).toBe(DEFAULT_CONFIG.scoreThreshold * 2);
+    expect(mc.confidence).toBe("high");
   });
 });

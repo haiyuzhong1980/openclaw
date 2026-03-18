@@ -301,7 +301,8 @@ export function classifyMessage(
       execution_expected,
       execution_kind: "chat",
     };
-    return toMessageClassification(intent, 0, config);
+    // Deterministic pattern match — use high synthetic score (same as custom phrases)
+    return toMessageClassification(intent, config.scoreThreshold * 2, config);
   }
 
   // Score all kinds

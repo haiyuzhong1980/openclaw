@@ -1,6 +1,11 @@
 /** Smart Message Handler Plugin — entry point & registration glue. */
 import type { PluginApi } from "openclaw/plugin-sdk/core";
-import { classifyExecutionIntent, classifyMessage, isIncomplete } from "./src/classifier.ts";
+import {
+  classifyExecutionIntent,
+  classifyMessage,
+  isIncomplete,
+  toMessageClassification,
+} from "./src/classifier.ts";
 import { getConfig } from "./src/config.ts";
 import { calculateDebounceMultiplier, logDebug } from "./src/debounce.ts";
 import {
@@ -131,7 +136,17 @@ export default function register(api: PluginApi) {
             api.logger,
           );
           if (classification.kind === "unknown" || textMatch.similarity >= 0.7) {
-            classification = { ...classification, kind: textMatch.kind };
+            // Recompute full classification so tier, confidence, and score stay consistent
+            const embeddingScore = textMatch.similarity * 10;
+            classification = toMessageClassification(
+              {
+                input_finalized: classification.input_finalized,
+                execution_expected: classification.execution_expected,
+                execution_kind: textMatch.kind,
+              },
+              embeddingScore,
+              effectiveConfig,
+            );
           }
         }
       }
