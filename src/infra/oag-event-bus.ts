@@ -134,3 +134,12 @@ export function resetOagEventBus(): void {
   stopFileWatcher();
   cachedSnapshot = null;
 }
+
+/**
+ * Test helper to directly set the cached snapshot.
+ * Only intended for unit testing the deep clone behavior of getCachedHealthSnapshot.
+ * @internal
+ */
+export function setCachedHealthSnapshotForTest(snapshot: Record<string, unknown>): void {
+  cachedSnapshot = snapshot;
+}

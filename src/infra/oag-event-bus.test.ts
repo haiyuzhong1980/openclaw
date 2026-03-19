@@ -18,7 +18,7 @@ const {
   getOagEventListenerCount,
   resetOagEventBus,
   getCachedHealthSnapshot,
-  startFileWatcher,
+  setCachedHealthSnapshotForTest,
 } = await import("./oag-event-bus.js");
 
 describe("oag-event-bus", () => {
@@ -124,8 +124,9 @@ describe("oag-event-bus", () => {
   });
 
   it("returns a deep clone so mutations do not affect the cache", () => {
-    // startFileWatcher triggers an initial read which populates cachedSnapshot
-    startFileWatcher("/tmp/fake-state.json", () => {});
+    // Use test helper to directly set the cached snapshot
+    // (startFileWatcher requires complex fs mocking that interferes with other modules)
+    setCachedHealthSnapshotForTest({ congested: false });
     const snapshot1 = getCachedHealthSnapshot();
     expect(snapshot1).not.toBeNull();
     // Mutate the returned snapshot
