@@ -38,6 +38,9 @@ import { getMachineDisplayName } from "../infra/machine-name.js";
 import { onOagEvent, startFileWatcher, stopFileWatcher } from "../infra/oag-event-bus.js";
 import { checkEvolutionHealth } from "../infra/oag-evolution-guard.js";
 import { collectActiveIncidents, recordOagIncident } from "../infra/oag-incident-collector.js";
+import { runLightweightDiagnosis } from "../infra/oag-diagnosis-lightweight.js";
+import { registerDiagnosisDispatch } from "../infra/oag-diagnosis-dispatch.js";
+import { startDeliveryWatchdog } from "../infra/oag-delivery-watchdog.js";
 import {
   appendMetricSnapshot,
   loadOagMemory,
@@ -1205,6 +1208,9 @@ export async function startGatewayServer(
     startFileWatcher(channelHealthStatePath, () => {
       log.debug("Channel health state file updated; cached snapshot refreshed");
     });
+
+    // Start delivery watchdog to monitor message delivery failures
+    startDeliveryWatchdog();
   }
 
   if (!minimalTestGateway) {
@@ -1285,15 +1291,23 @@ export async function startGatewayServer(
       idleCheck: gatewayIdleCheck,
     });
 
-    // Wire OAG diagnosis dispatch to the embedded agent runner.
-    // The embedded runner requires full session context (sessionId, sessionFile,
-    // workspaceDir, runId, timeoutMs, etc.) which is not available in the OAG
-    // diagnosis path. Deferring until a lightweight one-shot agent API exists.
-    // TODO: Implement once a one-shot embedded runner API is available that does
-    // not require a full session/thread context (sessionFile, workspaceDir, etc.).
-    log.info(
-      "OAG diagnosis dispatch: embedded runner requires session context, deferring to future implementation",
-    );
+    // Wire OAG diagnosis dispatch to the lightweight diagnosis runner.
+    // The lightweight runner uses the configured LLM directly without the embedded
+    // runner overhead, enabling diagnosis without full session context.
+    registerDiagnosisDispatch(async ({ prompt, sessionKey, agentId }) => {
+      log.info(`OAG diagnosis dispatch: running lightweight diagnosis for ${sessionKey}`);
+      const diagnosisId = sessionKey.replace("oag:diagnosis:", "");
+      const trigger = {
+        type: "recurring_pattern" as const,
+        description: "Automated diagnosis trigger",
+      };
+      const result = await runLightweightDiagnosis(trigger, diagnosisId);
+      if (result.ran && result.result) {
+        return JSON.stringify(result.result);
+      }
+      throw new Error("Lightweight diagnosis failed");
+    });
+    log.info("OAG diagnosis dispatch: wired to lightweight diagnosis runner");
   }
 
   const execApprovalManager = new ExecApprovalManager();
