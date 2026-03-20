@@ -1996,7 +1996,7 @@ describe("runReplyAgent argus resume supervisor", () => {
         blockReplyBreak: "message_end",
       },
     } as unknown as FollowupRun;
- 
+
     const runPromise = runReplyAgent({
       commandBody: "hello",
       followupRun,

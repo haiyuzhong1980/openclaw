@@ -73,6 +73,20 @@ export type OagConfig = {
      */
     additionalErrorPatterns?: string[];
   };
+  /**
+   * Subagent watchdog configuration for monitoring subagent failures and timeouts.
+   * Detects cascade failures, timeout storms, and deep nesting issues.
+   */
+  subagentWatchdog?: {
+    /** Enable or disable the subagent watchdog (default: true). */
+    enabled?: boolean;
+    /** Failures within the window required to trigger a cascade alert (default: 3). */
+    failureThreshold?: number;
+    /** Timeouts within the window required to trigger a timeout-storm alert (default: 2). */
+    timeoutThreshold?: number;
+    /** Detection window in milliseconds (default: 5 minutes). */
+    windowMs?: number;
+  };
   /** Per-channel OAG overrides keyed by channel id (e.g. "telegram", "discord"). */
   channels?: Record<string, Partial<OagConfig>>;
 };

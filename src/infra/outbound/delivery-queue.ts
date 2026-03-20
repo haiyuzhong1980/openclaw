@@ -6,8 +6,8 @@ import { resolveStateDir } from "../../config/paths.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/session-key.js";
 import { resolveOagDeliveryMaxRetries, resolveOagDeliveryRecoveryBudgetMs } from "../oag-config.js";
 import { generateSecureUuid } from "../secure-random.js";
-import type { OutboundMirror } from "./mirror.js";
 import { addToIndex, removeFromIndex, rebuildIndex } from "./delivery-index.js";
+import type { OutboundMirror } from "./mirror.js";
 import type { OutboundChannel } from "./targets.js";
 
 const QUEUE_DIRNAME = "delivery-queue";

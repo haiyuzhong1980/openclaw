@@ -4,6 +4,7 @@ import { resolveOagEvolutionAutoApply } from "./oag-config.js";
 import {
   completeDiagnosis,
   composeDiagnosisPrompt,
+  type DiagnosisRecommendation,
   type DiagnosisTrigger,
 } from "./oag-diagnosis.js";
 import { loadOagMemory } from "./oag-memory.js";
@@ -21,12 +22,24 @@ const ALLOWED_AUTO_APPLY_PATHS = new Set([
   "gateway.oag.delivery.maxRetries",
   "gateway.oag.delivery.recoveryBudgetMs",
   "gateway.oag.health.stalePollFactor",
-  "gateway.oag.health.staleEventThresholdMs",
   "gateway.oag.lock.staleMs",
 ]);
 
+export function filterAutoApplicableDiagnosisRecommendations(
+  recommendations: DiagnosisRecommendation[],
+): DiagnosisRecommendation[] {
+  return recommendations.filter(
+    (r) =>
+      r.type === "config_change" &&
+      r.risk === "low" &&
+      r.configPath &&
+      ALLOWED_AUTO_APPLY_PATHS.has(r.configPath),
+  );
+}
+
 type AgentDispatchFn = (params: {
   prompt: string;
+  trigger: DiagnosisTrigger;
   sessionKey: string;
   agentId: string;
 }) => Promise<string>;
@@ -69,6 +82,7 @@ export async function dispatchDiagnosis(
     const responseText = await Promise.race([
       registeredDispatch({
         prompt,
+        trigger,
         sessionKey,
         agentId: "oag",
       }),
@@ -95,13 +109,7 @@ export async function dispatchDiagnosis(
     const cfg = loadConfig();
     const autoApply = resolveOagEvolutionAutoApply(cfg);
     const lowRisk = autoApply
-      ? result.recommendations.filter(
-          (r) =>
-            r.type === "config_change" &&
-            r.risk === "low" &&
-            r.configPath &&
-            ALLOWED_AUTO_APPLY_PATHS.has(r.configPath),
-        )
+      ? filterAutoApplicableDiagnosisRecommendations(result.recommendations)
       : [];
     if (lowRisk.length > 0) {
       const { applyOagConfigChanges } = await import("./oag-config-writer.js");

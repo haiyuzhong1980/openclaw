@@ -9,6 +9,7 @@ import {
   pruneLegacyStoreKeys,
   resolveGatewaySessionStoreTarget,
 } from "../gateway/session-utils.js";
+import { emitSubagentEndedHookEvent } from "../hooks/internal-hooks.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import {
   isValidAgentId,
@@ -688,8 +689,8 @@ export async function spawnSubagentDirect(
     if (threadBindingReady) {
       const hasEndedHook = hookRunner?.hasHooks("subagent_ended") === true;
       let endedHookEmitted = false;
-      if (hasEndedHook) {
-        try {
+      try {
+        if (hasEndedHook) {
           await hookRunner?.runSubagentEnded(
             {
               targetSessionKey: childSessionKey,
@@ -707,10 +708,22 @@ export async function spawnSubagentDirect(
               requesterSessionKey: requesterInternalKey,
             },
           );
-          endedHookEmitted = true;
-        } catch {
-          // Spawn should still return an actionable error even if cleanup hooks fail.
         }
+        await emitSubagentEndedHookEvent({
+          targetSessionKey: childSessionKey,
+          targetKind: "subagent",
+          reason: "spawn-failed",
+          sendFarewell: true,
+          accountId: requesterOrigin?.accountId,
+          runId: childRunId,
+          outcome: "error",
+          error: "Session failed to start",
+          childSessionKey,
+          requesterSessionKey: requesterInternalKey,
+        });
+        endedHookEmitted = true;
+      } catch {
+        // Spawn should still return an actionable error even if cleanup hooks fail.
       }
       // Always delete the provisional child session after a failed spawn attempt.
       // If we already emitted subagent_ended above, suppress a duplicate lifecycle hook.

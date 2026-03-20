@@ -5,6 +5,7 @@ import {
   getRegisteredEventKeys,
   isAgentBootstrapEvent,
   isGatewayStartupEvent,
+  emitSubagentEndedHookEvent,
   isMessageReceivedEvent,
   isMessageSentEvent,
   registerInternalHook,
@@ -14,6 +15,7 @@ import {
   type GatewayStartupHookContext,
   type MessageReceivedHookContext,
   type MessageSentHookContext,
+  type SubagentEndedHookContext,
 } from "./internal-hooks.js";
 
 describe("hooks", () => {
@@ -472,6 +474,26 @@ describe("hooks", () => {
 
       const keys = getRegisteredEventKeys();
       expect(keys).toEqual([]);
+    });
+  });
+
+  describe("emitSubagentEndedHookEvent", () => {
+    it("fills childSessionKey and depth for subagent targets", async () => {
+      const handler = vi.fn();
+      registerInternalHook("subagent:ended", handler);
+
+      const event = await emitSubagentEndedHookEvent({
+        targetSessionKey: "agent:main:subagent:child",
+        targetKind: "subagent",
+        reason: "subagent-complete",
+      } satisfies SubagentEndedHookContext);
+
+      expect(handler).toHaveBeenCalledWith(event);
+      expect(event.context).toMatchObject({
+        targetSessionKey: "agent:main:subagent:child",
+        childSessionKey: "agent:main:subagent:child",
+        depth: 1,
+      });
     });
   });
 });

@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearInternalHooks, registerInternalHook } from "../hooks/internal-hooks.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const lifecycleMocks = vi.hoisted(() => ({
   getGlobalHookRunner: vi.fn(),
   runSubagentEnded: vi.fn(async () => {}),
+  getSubagentDepthFromSessionStore: vi.fn(() => 0),
 }));
 
 vi.mock("../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => lifecycleMocks.getGlobalHookRunner(),
+}));
+
+vi.mock("./subagent-depth.js", () => ({
+  getSubagentDepthFromSessionStore: (...args: unknown[]) =>
+    lifecycleMocks.getSubagentDepthFromSessionStore(...args),
 }));
 
 import { emitSubagentEndedHookOnce } from "./subagent-registry-completion.js";
@@ -42,8 +49,10 @@ describe("emitSubagentEndedHookOnce", () => {
   };
 
   beforeEach(() => {
+    clearInternalHooks();
     lifecycleMocks.getGlobalHookRunner.mockClear();
     lifecycleMocks.runSubagentEnded.mockClear();
+    lifecycleMocks.getSubagentDepthFromSessionStore.mockReset().mockReturnValue(0);
   });
 
   it("records ended hook marker even when no subagent_ended hooks are registered", async () => {
@@ -53,10 +62,14 @@ describe("emitSubagentEndedHookOnce", () => {
     });
 
     const params = createEmitParams();
+    const handler = vi.fn();
+    registerInternalHook("subagent:ended", handler);
+
     const emitted = await emitSubagentEndedHookOnce(params);
 
     expect(emitted).toBe(true);
     expect(lifecycleMocks.runSubagentEnded).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(typeof params.entry.endedHookEmittedAt).toBe("number");
     expect(params.persist).toHaveBeenCalledTimes(1);
   });
@@ -68,12 +81,55 @@ describe("emitSubagentEndedHookOnce", () => {
     });
 
     const params = createEmitParams();
+    const handler = vi.fn();
+    registerInternalHook("subagent:ended", handler);
+
     const emitted = await emitSubagentEndedHookOnce(params);
 
     expect(emitted).toBe(true);
     expect(lifecycleMocks.runSubagentEnded).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(typeof params.entry.endedHookEmittedAt).toBe("number");
     expect(params.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits an internal subagent:ended hook with real watchdog context", async () => {
+    lifecycleMocks.getGlobalHookRunner.mockReturnValue({
+      hasHooks: () => false,
+      runSubagentEnded: lifecycleMocks.runSubagentEnded,
+    });
+    lifecycleMocks.getSubagentDepthFromSessionStore.mockReturnValue(2);
+
+    const params = createEmitParams({
+      accountId: "acct-9",
+      outcome: "error",
+      error: "task failed",
+    });
+    const handler = vi.fn();
+    registerInternalHook("subagent:ended", handler);
+
+    const emitted = await emitSubagentEndedHookOnce(params);
+
+    expect(emitted).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const [event] = handler.mock.calls[0] ?? [];
+    expect(event).toMatchObject({
+      type: "subagent",
+      action: "ended",
+      sessionKey: params.entry.childSessionKey,
+      context: expect.objectContaining({
+        targetSessionKey: params.entry.childSessionKey,
+        targetKind: "subagent",
+        reason: SUBAGENT_ENDED_REASON_COMPLETE,
+        accountId: "acct-9",
+        runId: params.entry.runId,
+        outcome: "error",
+        error: "task failed",
+        childSessionKey: params.entry.childSessionKey,
+        requesterSessionKey: params.entry.requesterSessionKey,
+        depth: 1,
+      }),
+    });
   });
 
   it("returns false when runId is blank", async () => {

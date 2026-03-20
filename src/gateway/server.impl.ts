@@ -35,12 +35,12 @@ import { createExecApprovalForwarder } from "../infra/exec-approval-forwarder.js
 import { onHeartbeatEvent } from "../infra/heartbeat-events.js";
 import { startHeartbeatRunner, type HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
+import { startDeliveryWatchdog } from "../infra/oag-delivery-watchdog.js";
+import { registerDiagnosisDispatch } from "../infra/oag-diagnosis-dispatch.js";
+import { runLightweightDiagnosis } from "../infra/oag-diagnosis-lightweight.js";
 import { onOagEvent, startFileWatcher, stopFileWatcher } from "../infra/oag-event-bus.js";
 import { checkEvolutionHealth } from "../infra/oag-evolution-guard.js";
 import { collectActiveIncidents, recordOagIncident } from "../infra/oag-incident-collector.js";
-import { runLightweightDiagnosis } from "../infra/oag-diagnosis-lightweight.js";
-import { registerDiagnosisDispatch } from "../infra/oag-diagnosis-dispatch.js";
-import { startDeliveryWatchdog } from "../infra/oag-delivery-watchdog.js";
 import {
   appendMetricSnapshot,
   loadOagMemory,
@@ -55,6 +55,10 @@ import {
 } from "../infra/oag-metrics.js";
 import { runPostRecoveryAnalysis, schedulePeriodicAnalysis } from "../infra/oag-postmortem.js";
 import { createGatewayIdleCheck, runWhenIdle } from "../infra/oag-scheduler.js";
+import {
+  resolveSubagentWatchdogConfig,
+  startSubagentWatchdog,
+} from "../infra/oag-subagent-watchdog.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import {
   detectPluginInstallPathIssue,
@@ -1203,6 +1207,7 @@ export async function startGatewayServer(
         ...(maxRestartsPerHour != null && { maxRestartsPerHour }),
       });
 
+  let stopSubagentWatchdog = () => {};
   if (!minimalTestGateway) {
     const channelHealthStatePath = `${process.env.HOME ?? ""}/.openclaw/sentinel/channel-health-state.json`;
     startFileWatcher(channelHealthStatePath, () => {
@@ -1211,6 +1216,9 @@ export async function startGatewayServer(
 
     // Start delivery watchdog to monitor message delivery failures
     startDeliveryWatchdog();
+
+    // Start subagent watchdog to monitor subagent completion failures and timeouts
+    stopSubagentWatchdog = startSubagentWatchdog(resolveSubagentWatchdogConfig(cfgAtStart));
   }
 
   if (!minimalTestGateway) {
@@ -1294,14 +1302,10 @@ export async function startGatewayServer(
     // Wire OAG diagnosis dispatch to the lightweight diagnosis runner.
     // The lightweight runner uses the configured LLM directly without the embedded
     // runner overhead, enabling diagnosis without full session context.
-    registerDiagnosisDispatch(async ({ prompt, sessionKey, agentId }) => {
+    registerDiagnosisDispatch(async ({ prompt, trigger, sessionKey, agentId: _agentId }) => {
       log.info(`OAG diagnosis dispatch: running lightweight diagnosis for ${sessionKey}`);
       const diagnosisId = sessionKey.replace("oag:diagnosis:", "");
-      const trigger = {
-        type: "recurring_pattern" as const,
-        description: "Automated diagnosis trigger",
-      };
-      const result = await runLightweightDiagnosis(trigger, diagnosisId);
+      const result = await runLightweightDiagnosis(trigger, diagnosisId, prompt);
       if (result.ran && result.result) {
         return JSON.stringify(result.result);
       }
@@ -1662,6 +1666,7 @@ export async function startGatewayServer(
         periodicAnalysisHandle.stop();
         periodicAnalysisHandle = null;
       }
+      stopSubagentWatchdog();
       stopFileWatcher();
       await close(opts);
     },

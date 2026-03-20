@@ -1,3 +1,4 @@
+import { emitSubagentEndedHookEvent } from "../hooks/internal-hooks.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { SubagentRunOutcome } from "./subagent-announce.js";
 import {
@@ -85,6 +86,19 @@ export async function emitSubagentEndedHookOnce(params: {
         },
       );
     }
+    await emitSubagentEndedHookEvent({
+      targetSessionKey: params.entry.childSessionKey,
+      targetKind: SUBAGENT_TARGET_KIND_SUBAGENT,
+      reason: params.reason,
+      sendFarewell: params.sendFarewell,
+      accountId: params.accountId,
+      runId: params.entry.runId,
+      endedAt: params.entry.endedAt,
+      outcome: params.outcome,
+      error: params.error,
+      childSessionKey: params.entry.childSessionKey,
+      requesterSessionKey: params.entry.requesterSessionKey,
+    });
     params.entry.endedHookEmittedAt = Date.now();
     params.persist();
     return true;

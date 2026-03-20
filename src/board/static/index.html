@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OMA Dashboard</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #eee;
+        padding: 20px;
+      }
+      h1 {
+        margin-bottom: 20px;
+        color: #4ecca3;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+      }
+      .card {
+        background: #16213e;
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .card h2 {
+        font-size: 14px;
+        color: #888;
+        margin-bottom: 12px;
+        text-transform: uppercase;
+      }
+      .stat {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #333;
+      }
+      .stat:last-child {
+        border-bottom: none;
+      }
+      .stat-label {
+        color: #888;
+      }
+      .stat-value {
+        font-weight: bold;
+      }
+      .status-idle {
+        color: #4ecca3;
+      }
+      .status-working {
+        color: #ffc107;
+      }
+      .status-error {
+        color: #dc3545;
+      }
+      .status-pending {
+        color: #888;
+      }
+      .status-completed {
+        color: #28a745;
+      }
+      .status-failed {
+        color: #dc3545;
+      }
+      .refresh-info {
+        font-size: 12px;
+        color: #666;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🤖 OMA Dashboard</h1>
+    <div class="grid">
+      <div class="card">
+        <h2>Agents</h2>
+        <div id="agents">Loading...</div>
+      </div>
+      <div class="card">
+        <h2>Tasks</h2>
+        <div id="tasks">Loading...</div>
+      </div>
+      <div class="card">
+        <h2>Summary</h2>
+        <div id="summary">Loading...</div>
+      </div>
+    </div>
+    <div class="refresh-info" id="refresh-info">Last updated: -</div>
+
+    <script>
+      const refreshInterval = 5000;
+      let lastUpdate = "-";
+
+      async function fetchStatus() {
+        try {
+          const res = await fetch("/api/status");
+          const data = await res.json();
+          render(data);
+          lastUpdate = new Date().toLocaleTimeString();
+          document.getElementById("refresh-info").textContent = `Last updated: ${lastUpdate}`;
+        } catch (err) {
+          console.error("Failed to fetch status:", err);
+        }
+      }
+
+      function render(data) {
+        // Agents
+        const agents = Object.values(data.agents);
+        let agentsHtml = agents.length === 0 ? "<p>No agents</p>" : "";
+        for (const a of agents) {
+          agentsHtml += `
+          <div class="stat">
+            <span class="stat-label">${a.id}</span>
+            <span class="stat-value status-${a.status}">${a.status}</span>
+          </div>
+        `;
+        }
+        document.getElementById("agents").innerHTML = agentsHtml;
+
+        // Tasks
+        const tasks = Object.values(data.tasks);
+        let tasksHtml = tasks.length === 0 ? "<p>No tasks</p>" : "";
+        for (const t of tasks) {
+          tasksHtml += `
+          <div class="stat">
+            <span class="stat-label">${t.id}</span>
+            <span class="stat-value status-${t.status}">${t.status}</span>
+          </div>
+        `;
+        }
+        document.getElementById("tasks").innerHTML = tasksHtml;
+
+        // Summary
+        const totalCost = agents.reduce((sum, a) => sum + (a.cost || 0), 0);
+        const totalTokens = agents.reduce((sum, a) => sum + (a.tokensUsed || 0), 0);
+        document.getElementById("summary").innerHTML = `
+        <div class="stat">
+          <span class="stat-label">Total Agents</span>
+          <span class="stat-value">${agents.length}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total Tasks</span>
+          <span class="stat-value">${tasks.length}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total Tokens</span>
+          <span class="stat-value">${totalTokens.toLocaleString()}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total Cost</span>
+          <span class="stat-value">$${totalCost.toFixed(4)}</span>
+        </div>
+      `;
+      }
+
+      // Initial fetch
+      fetchStatus();
+      // Auto-refresh
+      setInterval(fetchStatus, refreshInterval);
+    </script>
+  </body>
+</html>

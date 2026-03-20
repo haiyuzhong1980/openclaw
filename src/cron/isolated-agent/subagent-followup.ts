@@ -11,7 +11,10 @@ import {
 import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 
-const FAST_TEST_MODE = process.env.VITEST === "true" || process.env.NODE_ENV === "test" || process.env.OPENCLAW_TEST_FAST === "1";
+const FAST_TEST_MODE =
+  process.env.VITEST === "true" ||
+  process.env.NODE_ENV === "test" ||
+  process.env.OPENCLAW_TEST_FAST === "1";
 
 function resolveCronSubagentTimings() {
   return {

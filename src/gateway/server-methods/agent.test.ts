@@ -92,7 +92,6 @@ vi.mock("../../infra/outbound/channel-selection.js", async () => {
     resolveMessageChannelSelection: mocks.resolveMessageChannelSelection,
   };
 });
-}));
 
 vi.mock("../../sessions/send-policy.js", () => ({
   resolveSendPolicy: () => "allow",

@@ -210,7 +210,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
 
     // Record the outcome
     recentOutcomes.push({
-      childSessionKey: context.childSessionKey,
+      childSessionKey: context.childSessionKey ?? context.targetSessionKey,
       outcome: context.outcome,
       error: context.error,
       timestamp: Date.now(),
@@ -237,7 +237,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
         severity: "warning",
         failureCount: cascadeCheck.failureCount,
         windowMs: currentConfig.windowMs,
-        childSessionKey: context.childSessionKey,
+        childSessionKey: context.childSessionKey ?? context.targetSessionKey,
         requesterSessionKey: context.requesterSessionKey,
         runId: context.runId,
         error: context.error,
@@ -257,7 +257,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
         severity: "warning",
         timeoutCount: timeoutCheck.timeoutCount,
         windowMs: currentConfig.windowMs,
-        childSessionKey: context.childSessionKey,
+        childSessionKey: context.childSessionKey ?? context.targetSessionKey,
         requesterSessionKey: context.requesterSessionKey,
         runId: context.runId,
         suggestion: {
@@ -275,7 +275,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
         subtype: "deep_nesting_issue",
         severity: "info",
         depth: deepNestingCheck.depth,
-        childSessionKey: context.childSessionKey,
+        childSessionKey: context.childSessionKey ?? context.targetSessionKey,
         requesterSessionKey: context.requesterSessionKey,
         runId: context.runId,
         suggestion: {
@@ -291,7 +291,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
         type: "subagent_failure",
         subtype: "single_failure",
         severity: "info",
-        childSessionKey: context.childSessionKey,
+        childSessionKey: context.childSessionKey ?? context.targetSessionKey,
         requesterSessionKey: context.requesterSessionKey,
         runId: context.runId,
         error: context.error,
@@ -304,7 +304,7 @@ export function startSubagentWatchdog(config?: Partial<SubagentWatchdogConfig>):
         type: "subagent_timeout",
         subtype: "single_timeout",
         severity: "info",
-        childSessionKey: context.childSessionKey,
+        childSessionKey: context.childSessionKey ?? context.targetSessionKey,
         requesterSessionKey: context.requesterSessionKey,
         runId: context.runId,
         suggestion: {

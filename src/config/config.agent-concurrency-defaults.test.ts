@@ -28,6 +28,26 @@ describe("agent concurrency defaults", () => {
     expect(resolveSubagentMaxConcurrent(cfg)).toBe(1);
   });
 
+  it("accepts gateway oag subagent watchdog config", () => {
+    const parsed = OpenClawSchema.parse({
+      gateway: {
+        oag: {
+          subagentWatchdog: {
+            enabled: false,
+            failureThreshold: 5,
+            timeoutThreshold: 3,
+            windowMs: 120000,
+          },
+        },
+      },
+    });
+
+    expect(parsed.gateway?.oag?.subagentWatchdog?.enabled).toBe(false);
+    expect(parsed.gateway?.oag?.subagentWatchdog?.failureThreshold).toBe(5);
+    expect(parsed.gateway?.oag?.subagentWatchdog?.timeoutThreshold).toBe(3);
+    expect(parsed.gateway?.oag?.subagentWatchdog?.windowMs).toBe(120000);
+  });
+
   it("accepts subagent spawn depth and per-agent child limits", () => {
     const parsed = OpenClawSchema.parse({
       agents: {

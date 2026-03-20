@@ -1,5 +1,5 @@
 import { type RunOptions, run } from "@grammyjs/runner";
-import { createConnectedChannelStatusPatch } from "../gateway/channel-status-patches.js";
+import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { computeBackoff, sleepWithAbort } from "openclaw/plugin-sdk/infra-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/infra-runtime";
 import { formatDurationPrecise } from "openclaw/plugin-sdk/infra-runtime";

@@ -3,10 +3,14 @@
  * Uses the configured LLM directly without the embedded runner overhead.
  */
 
+import { resolveApiKeyForProvider } from "../agents/model-auth.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { loadConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.js";
+import type { ModelApi, ModelProviderConfig } from "../config/types.models.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveOagEvolutionAutoApply } from "./oag-config.js";
+import { filterAutoApplicableDiagnosisRecommendations } from "./oag-diagnosis-dispatch.js";
 import {
   completeDiagnosis,
   composeDiagnosisPrompt,
@@ -17,32 +21,122 @@ import {
 import { loadOagMemory, recordDiagnosis } from "./oag-memory.js";
 
 const log = createSubsystemLogger("oag/diagnosis-lightweight");
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+const DIAGNOSIS_LLM_TIMEOUT_MS = 30_000;
 
-/**
- * Resolve the first available model configuration from the config.
- * Returns the model name, base URL, and API key if available.
- */
-function resolveFirstModelConfig(cfg: OpenClawConfig): {
+type SupportedDiagnosisApi = Extract<ModelApi, "openai-completions" | "anthropic-messages">;
+
+type DiagnosisModelConfig = {
+  provider: string;
   model: string;
-  baseUrl?: string;
+  api: SupportedDiagnosisApi;
+  baseUrl: string;
   apiKey?: string;
-} | null {
-  const models = cfg.agents?.defaults?.models;
-  if (!models) {
-    return null;
+  authMode?: "api-key" | "oauth" | "token" | "aws-sdk";
+  authHeader?: boolean;
+};
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
+}
+
+function normalizeAnthropicBaseUrl(baseUrl: string): string {
+  return normalizeBaseUrl(baseUrl).replace(/\/v1$/, "");
+}
+
+function isAzureFoundryUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase().endsWith(".services.ai.azure.com");
+  } catch {
+    return false;
   }
-  // Get the first configured model
-  for (const key of Object.keys(models)) {
-    const modelConfig = models[key];
-    if (modelConfig?.model) {
-      return {
-        model: modelConfig.model,
-        baseUrl: modelConfig.baseUrl,
-        apiKey: modelConfig.apiKey,
-      };
-    }
+}
+
+function isAzureOpenAiUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase().endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function isAzureUrl(baseUrl: string): boolean {
+  return isAzureFoundryUrl(baseUrl) || isAzureOpenAiUrl(baseUrl);
+}
+
+function resolveAzureOpenAiBaseUrl(baseUrl: string, modelId: string): string {
+  const normalizedUrl = normalizeBaseUrl(baseUrl).replace(/\/openai\/v1$/, "");
+  if (normalizedUrl.includes("/openai/deployments/")) {
+    return normalizedUrl;
+  }
+  return `${normalizedUrl}/openai/deployments/${modelId}`;
+}
+
+function resolveDiagnosisApi(params: {
+  provider: string;
+  providerConfig?: ModelProviderConfig;
+  modelId: string;
+}): SupportedDiagnosisApi | null {
+  const configuredModel = params.providerConfig?.models?.find(
+    (candidate) => candidate.id === params.modelId,
+  );
+  const api =
+    configuredModel?.api ?? params.providerConfig?.api ?? inferDiagnosisApi(params.provider);
+  if (api === "openai-completions" || api === "anthropic-messages") {
+    return api;
   }
   return null;
+}
+
+function inferDiagnosisApi(provider: string): SupportedDiagnosisApi | null {
+  if (provider === "anthropic") {
+    return "anthropic-messages";
+  }
+  if (provider === "openai") {
+    return "openai-completions";
+  }
+  return null;
+}
+
+/**
+ * Resolve the configured default model and transport details for lightweight diagnosis.
+ */
+async function resolveDiagnosisModelConfig(
+  cfg: OpenClawConfig,
+): Promise<DiagnosisModelConfig | null> {
+  const defaultModel = resolveDefaultModelForAgent({ cfg });
+  const providerConfig = cfg.models?.providers?.[defaultModel.provider];
+  const api = resolveDiagnosisApi({
+    provider: defaultModel.provider,
+    providerConfig,
+    modelId: defaultModel.model,
+  });
+  if (!api) {
+    log.warn(
+      `OAG lightweight diagnosis does not support provider ${defaultModel.provider} model ${defaultModel.model}`,
+    );
+    return null;
+  }
+
+  const auth = await resolveApiKeyForProvider({
+    provider: defaultModel.provider,
+    cfg,
+  });
+  const apiKey = auth.source.includes("synthetic local key") ? undefined : auth.apiKey;
+
+  return {
+    provider: defaultModel.provider,
+    model: defaultModel.model,
+    api,
+    baseUrl:
+      api === "anthropic-messages"
+        ? normalizeAnthropicBaseUrl(providerConfig?.baseUrl ?? DEFAULT_ANTHROPIC_BASE_URL)
+        : normalizeBaseUrl(providerConfig?.baseUrl ?? DEFAULT_OPENAI_BASE_URL),
+    apiKey,
+    authMode: auth.mode,
+    authHeader: providerConfig?.authHeader,
+  };
 }
 
 /**
@@ -52,20 +146,19 @@ function resolveFirstModelConfig(cfg: OpenClawConfig): {
 export async function runLightweightDiagnosis(
   trigger: DiagnosisTrigger,
   diagnosisId: string,
+  promptOverride?: string,
 ): Promise<{ ran: boolean; result?: DiagnosisResult; applied: number }> {
   const cfg = loadConfig();
 
-  // Check if we have a model configured
-  const modelConfig = resolveFirstModelConfig(cfg);
+  const modelConfig = await resolveDiagnosisModelConfig(cfg);
   if (!modelConfig) {
-    log.warn("No model configured for OAG diagnosis");
+    log.warn("No supported model configured for OAG diagnosis");
     return { ran: false, applied: 0 };
   }
 
   const memory = await loadOagMemory();
-  const prompt = composeDiagnosisPrompt(trigger, memory);
+  const prompt = promptOverride ?? composeDiagnosisPrompt(trigger, memory);
 
-  // Record the diagnosis attempt
   await recordDiagnosis({
     id: diagnosisId,
     triggeredAt: new Date().toISOString(),
@@ -77,10 +170,10 @@ export async function runLightweightDiagnosis(
   });
 
   try {
-    log.info(`Running lightweight diagnosis ${diagnosisId} with model ${modelConfig.model}`);
+    log.info(
+      `Running lightweight diagnosis ${diagnosisId} with model ${modelConfig.provider}/${modelConfig.model}`,
+    );
 
-    // Use the model config to make a direct LLM call
-    // This is a simplified version that uses fetch to call the API
     const response = await callLlmDirectly(modelConfig, prompt);
 
     const result = parseDiagnosisResponse(response);
@@ -89,15 +182,11 @@ export async function runLightweightDiagnosis(
       return { ran: true, applied: 0 };
     }
 
-    // Complete the diagnosis record
     await completeDiagnosis(diagnosisId, response);
 
-    // Apply low-risk config recommendations if auto-apply is enabled
     const autoApply = resolveOagEvolutionAutoApply(cfg);
     const lowRisk = autoApply
-      ? result.recommendations.filter(
-          (r) => r.type === "config_change" && r.risk === "low" && r.configPath,
-        )
+      ? filterAutoApplicableDiagnosisRecommendations(result.recommendations)
       : [];
 
     if (lowRisk.length > 0) {
@@ -118,31 +207,109 @@ export async function runLightweightDiagnosis(
  * Make a direct LLM API call without the embedded runner.
  * This is used when full session context is not available.
  */
-async function callLlmDirectly(
-  modelConfig: { model: string; baseUrl?: string; apiKey?: string },
+async function callLlmDirectly(modelConfig: DiagnosisModelConfig, prompt: string): Promise<string> {
+  if (modelConfig.api === "anthropic-messages") {
+    return await callAnthropicDirectly(modelConfig, prompt);
+  }
+  return await callOpenAiCompatibleDirectly(modelConfig, prompt);
+}
+
+async function callOpenAiCompatibleDirectly(
+  modelConfig: DiagnosisModelConfig,
   prompt: string,
 ): Promise<string> {
-  const baseUrl = modelConfig.baseUrl || "https://api.openai.com/v1";
-  const url = `${baseUrl}/chat/completions`;
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${modelConfig.apiKey || ""}`,
-    },
-    body: JSON.stringify({
-      model: modelConfig.model,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 2000,
-      temperature: 0.3,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+  const baseUrl = isAzureUrl(modelConfig.baseUrl)
+    ? resolveAzureOpenAiBaseUrl(modelConfig.baseUrl, modelConfig.model)
+    : modelConfig.baseUrl;
+  const url = new URL("chat/completions", `${baseUrl}/`);
+  if (isAzureUrl(modelConfig.baseUrl)) {
+    url.searchParams.set("api-version", "2024-10-21");
   }
 
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  return data.choices?.[0]?.message?.content || "";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (modelConfig.apiKey) {
+    if (isAzureUrl(modelConfig.baseUrl) || modelConfig.authHeader === false) {
+      headers["api-key"] = modelConfig.apiKey;
+    } else {
+      headers.Authorization = `Bearer ${modelConfig.apiKey}`;
+    }
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DIAGNOSIS_LLM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: modelConfig.model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 2000,
+        temperature: 0.3,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return data.choices?.[0]?.message?.content ?? "";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function callAnthropicDirectly(
+  modelConfig: DiagnosisModelConfig,
+  prompt: string,
+): Promise<string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "anthropic-version": "2023-06-01",
+  };
+  if (modelConfig.apiKey) {
+    if (modelConfig.authMode === "oauth" || modelConfig.authMode === "token") {
+      headers.Authorization = `Bearer ${modelConfig.apiKey}`;
+    } else {
+      headers["x-api-key"] = modelConfig.apiKey;
+    }
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DIAGNOSIS_LLM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${modelConfig.baseUrl}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: modelConfig.model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 2000,
+        temperature: 0.3,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as {
+      content?: Array<{ type?: string; text?: string }>;
+    };
+    return (data.content ?? [])
+      .filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("\n");
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }

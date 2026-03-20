@@ -788,7 +788,6 @@ describe("deliverOutboundPayloads", () => {
     expect(sendWhatsApp).not.toHaveBeenCalled();
   });
 
-
   it("defers silent internal followups when user-visible queue entries are pending", async () => {
     const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
     queueMocks.hasPendingUserVisibleDeliveries.mockResolvedValue(true);

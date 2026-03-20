@@ -18,7 +18,7 @@ import {
   readChannelAllowFromStore,
   upsertChannelPairingRequest,
 } from "openclaw/plugin-sdk/conversation-runtime";
-import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/channel-status-patches";
+import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { normalizeScpRemoteHost } from "openclaw/plugin-sdk/infra-runtime";
 import { waitForTransportReady } from "openclaw/plugin-sdk/infra-runtime";
 import {

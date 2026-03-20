@@ -9,8 +9,15 @@ import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
 import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { getSubagentDepth } from "../sessions/session-key-utils.js";
 
-export type InternalHookEventType = "command" | "session" | "agent" | "gateway" | "message";
+export type InternalHookEventType =
+  | "command"
+  | "session"
+  | "agent"
+  | "gateway"
+  | "message"
+  | "subagent";
 
 export type AgentBootstrapHookContext = {
   workspaceDir: string;
@@ -154,6 +161,27 @@ export type MessagePreprocessedHookEvent = InternalHookEvent & {
   type: "message";
   action: "preprocessed";
   context: MessagePreprocessedHookContext;
+};
+
+export type SubagentEndedHookContext = {
+  targetSessionKey: string;
+  targetKind: "subagent" | "acp";
+  reason: string;
+  sendFarewell?: boolean;
+  accountId?: string;
+  runId?: string;
+  endedAt?: number;
+  outcome?: "ok" | "error" | "timeout" | "killed" | "reset" | "deleted";
+  error?: string;
+  childSessionKey?: string;
+  requesterSessionKey?: string;
+  depth?: number;
+};
+
+export type SubagentEndedHookEvent = InternalHookEvent & {
+  type: "subagent";
+  action: "ended";
+  context: SubagentEndedHookContext;
 };
 
 export interface InternalHookEvent {
@@ -418,4 +446,39 @@ export function isMessagePreprocessedEvent(
     return false;
   }
   return hasStringContextField(context, "channelId");
+}
+
+export function isSubagentEndedEvent(event: InternalHookEvent): event is SubagentEndedHookEvent {
+  if (!isHookEventTypeAndAction(event, "subagent", "ended")) {
+    return false;
+  }
+  const context = getHookContext<SubagentEndedHookContext>(event);
+  if (!context) {
+    return false;
+  }
+  return (
+    hasStringContextField(context, "targetSessionKey") &&
+    hasStringContextField(context, "targetKind") &&
+    hasStringContextField(context, "reason")
+  );
+}
+
+export async function emitSubagentEndedHookEvent(
+  context: SubagentEndedHookContext,
+): Promise<SubagentEndedHookEvent> {
+  const childSessionKey =
+    context.childSessionKey ??
+    (context.targetKind === "subagent" ? context.targetSessionKey : undefined);
+  const depth =
+    context.depth ??
+    (context.targetKind === "subagent"
+      ? getSubagentDepth(childSessionKey ?? context.targetSessionKey)
+      : undefined);
+  const event = createInternalHookEvent("subagent", "ended", context.targetSessionKey, {
+    ...context,
+    ...(childSessionKey ? { childSessionKey } : {}),
+    ...(typeof depth === "number" ? { depth } : {}),
+  }) as SubagentEndedHookEvent;
+  await triggerInternalHook(event);
+  return event;
 }

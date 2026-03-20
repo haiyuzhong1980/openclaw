@@ -6,6 +6,7 @@ import {
   resolveDefaultGroupPolicy,
   warnMissingProviderGroupPolicyFallbackOnce,
 } from "openclaw/plugin-sdk/config-runtime";
+import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import type { BackoffPolicy } from "openclaw/plugin-sdk/infra-runtime";
 import { waitForTransportReady } from "openclaw/plugin-sdk/infra-runtime";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-runtime";
@@ -23,7 +24,6 @@ import { DEFAULT_GROUP_HISTORY_LIMIT, type HistoryEntry } from "openclaw/plugin-
 import { createNonExitingRuntime, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeStringEntries } from "openclaw/plugin-sdk/text-runtime";
 import { normalizeE164 } from "openclaw/plugin-sdk/text-runtime";
-import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/channel-status";
 import { resolveSignalAccount } from "./accounts.js";
 import { signalCheck, signalRpcRequest } from "./client.js";
 import { formatSignalDaemonExit, spawnSignalDaemon, type SignalDaemonHandle } from "./daemon.js";

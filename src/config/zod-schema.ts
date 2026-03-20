@@ -928,6 +928,15 @@ export const OpenClawSchema = z
               })
               .strict()
               .optional(),
+            subagentWatchdog: z
+              .object({
+                enabled: z.boolean().optional(),
+                failureThreshold: z.number().int().positive().optional(),
+                timeoutThreshold: z.number().int().positive().optional(),
+                windowMs: z.number().int().positive().optional(),
+              })
+              .strict()
+              .optional(),
             channels: z.record(z.string(), z.any()).optional(),
           })
           .strict()

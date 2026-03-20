@@ -104,6 +104,8 @@ describe("oag-diagnosis-dispatch", () => {
     expect(result.applied).toBe(1);
     expect(mockDispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        prompt: "test prompt",
+        trigger: { type: "recurring_pattern", description: "test" },
         sessionKey: "oag:diagnosis:diag-2",
         agentId: "oag",
       }),

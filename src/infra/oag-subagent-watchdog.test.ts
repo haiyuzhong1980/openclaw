@@ -1,10 +1,23 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { SUBAGENT_ENDED_REASON_COMPLETE } from "../agents/subagent-lifecycle-events.js";
+import type { SubagentRunRecord } from "../agents/subagent-registry.types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   clearInternalHooks,
   triggerInternalHook,
   createInternalHookEvent,
 } from "../hooks/internal-hooks.js";
+
+const hookRunnerMocks = vi.hoisted(() => ({
+  getGlobalHookRunner: vi.fn(() => ({
+    hasHooks: () => false,
+    runSubagentEnded: vi.fn(async () => {}),
+  })),
+}));
+
+vi.mock("../plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => hookRunnerMocks.getGlobalHookRunner(),
+}));
 
 // Mock oag-event-bus
 const mockEmitOagEvent = vi.fn();
@@ -17,9 +30,50 @@ vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),
+    error: vi.fn(),
     debug: vi.fn(),
   }),
 }));
+
+function createRunEntry(): SubagentRunRecord {
+  return {
+    runId: "run-1",
+    childSessionKey: "agent:main:subagent:child-1",
+    requesterSessionKey: "agent:main:main",
+    requesterDisplayKey: "main",
+    task: "task",
+    cleanup: "keep",
+    createdAt: Date.now(),
+  };
+}
+
+async function emitRealSubagentEndedEvent(overrides?: {
+  accountId?: string;
+  childSessionKey?: string;
+  requesterSessionKey?: string;
+  outcome?: "ok" | "error" | "timeout";
+  error?: string;
+}): Promise<void> {
+  const { emitSubagentEndedHookOnce } = await import("../agents/subagent-registry-completion.js");
+  const entry = {
+    ...createRunEntry(),
+    ...(overrides?.childSessionKey ? { childSessionKey: overrides.childSessionKey } : {}),
+    ...(overrides?.requesterSessionKey
+      ? { requesterSessionKey: overrides.requesterSessionKey }
+      : {}),
+  };
+
+  await emitSubagentEndedHookOnce({
+    entry,
+    reason: SUBAGENT_ENDED_REASON_COMPLETE,
+    sendFarewell: true,
+    accountId: overrides?.accountId,
+    outcome: overrides?.outcome,
+    error: overrides?.error,
+    inFlightRunIds: new Set<string>(),
+    persist: vi.fn(),
+  });
+}
 
 describe("oag-subagent-watchdog", () => {
   beforeEach(async () => {
@@ -42,6 +96,9 @@ describe("oag-subagent-watchdog", () => {
 
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-1", {
+          targetSessionKey: "child-session-1",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-1",
           outcome: "error",
           error: "Task failed",
@@ -67,6 +124,9 @@ describe("oag-subagent-watchdog", () => {
 
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-2", {
+          targetSessionKey: "child-session-2",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-2",
           outcome: "timeout",
           runId: "run-002",
@@ -90,6 +150,9 @@ describe("oag-subagent-watchdog", () => {
 
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-3", {
+          targetSessionKey: "child-session-3",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-3",
           outcome: "ok",
           runId: "run-003",
@@ -106,6 +169,9 @@ describe("oag-subagent-watchdog", () => {
 
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-4", {
+          targetSessionKey: "child-session-4",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-4",
           outcome: "error",
           error: "Task failed",
@@ -123,6 +189,9 @@ describe("oag-subagent-watchdog", () => {
       // Trigger once to verify it's working
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-5", {
+          targetSessionKey: "child-session-5",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-5",
           outcome: "error",
         }),
@@ -136,6 +205,9 @@ describe("oag-subagent-watchdog", () => {
       // Trigger again - should not emit
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session-6", {
+          targetSessionKey: "child-session-6",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session-6",
           outcome: "error",
         }),
@@ -143,6 +215,30 @@ describe("oag-subagent-watchdog", () => {
 
       // Still 1, not 2
       expect(mockEmitOagEvent).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("real subagent completion wiring", () => {
+    it("consumes real subagent completion events emitted by the registry", async () => {
+      const { startSubagentWatchdog } = await import("./oag-subagent-watchdog.js");
+
+      startSubagentWatchdog();
+      await emitRealSubagentEndedEvent({
+        accountId: "acct-real",
+        outcome: "error",
+        error: "Task failed from registry",
+      });
+
+      expect(mockEmitOagEvent).toHaveBeenCalledWith(
+        "anomaly_detected",
+        expect.objectContaining({
+          type: "subagent_failure",
+          subtype: "single_failure",
+          childSessionKey: "agent:main:subagent:child-1",
+          requesterSessionKey: "agent:main:main",
+          error: "Task failed from registry",
+        }),
+      );
     });
   });
 
@@ -158,6 +254,9 @@ describe("oag-subagent-watchdog", () => {
       for (let i = 0; i < 3; i++) {
         await triggerInternalHook(
           createInternalHookEvent("subagent", "ended", `child-session-${i}`, {
+            targetSessionKey: `child-session-${i}`,
+            targetKind: "subagent",
+            reason: "subagent-complete",
             childSessionKey: `child-session-${i}`,
             outcome: "error",
             error: `Error ${i}`,
@@ -191,6 +290,9 @@ describe("oag-subagent-watchdog", () => {
       for (let i = 0; i < 2; i++) {
         await triggerInternalHook(
           createInternalHookEvent("subagent", "ended", `child-timeout-${i}`, {
+            targetSessionKey: `child-timeout-${i}`,
+            targetKind: "subagent",
+            reason: "subagent-complete",
             childSessionKey: `child-timeout-${i}`,
             outcome: "timeout",
           }),
@@ -222,6 +324,9 @@ describe("oag-subagent-watchdog", () => {
       for (let i = 0; i < 2; i++) {
         await triggerInternalHook(
           createInternalHookEvent("subagent", "ended", `child-deep-${i}`, {
+            targetSessionKey: `child-deep-${i}`,
+            targetKind: "subagent",
+            reason: "subagent-complete",
             childSessionKey: `child-deep-${i}`,
             outcome: "error",
             depth: 2,
@@ -288,6 +393,9 @@ describe("oag-subagent-watchdog", () => {
       for (let i = 0; i < 2; i++) {
         await triggerInternalHook(
           createInternalHookEvent("subagent", "ended", `child-${i}`, {
+            targetSessionKey: `child-${i}`,
+            targetKind: "subagent",
+            reason: "subagent-complete",
             childSessionKey: `child-${i}`,
             outcome: "error",
           }),
@@ -313,18 +421,27 @@ describe("oag-subagent-watchdog", () => {
       // Mix of outcomes
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-1", {
+          targetSessionKey: "child-1",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-1",
           outcome: "ok",
         }),
       );
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-2", {
+          targetSessionKey: "child-2",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-2",
           outcome: "error",
         }),
       );
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-3", {
+          targetSessionKey: "child-3",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-3",
           outcome: "timeout",
         }),
@@ -355,6 +472,9 @@ describe("oag-subagent-watchdog", () => {
       // Trigger once
       await triggerInternalHook(
         createInternalHookEvent("subagent", "ended", "child-session", {
+          targetSessionKey: "child-session",
+          targetKind: "subagent",
+          reason: "subagent-complete",
           childSessionKey: "child-session",
           outcome: "error",
         }),

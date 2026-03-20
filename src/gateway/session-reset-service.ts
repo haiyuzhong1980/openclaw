@@ -13,7 +13,11 @@ import {
   updateSessionStore,
 } from "../config/sessions.js";
 import { logVerbose } from "../globals.js";
-import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
+import {
+  createInternalHookEvent,
+  emitSubagentEndedHookEvent,
+  triggerInternalHook,
+} from "../hooks/internal-hooks.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import {
@@ -89,21 +93,29 @@ export async function emitSessionUnboundLifecycleEvent(params: {
   }
 
   const hookRunner = getGlobalHookRunner();
-  if (!hookRunner?.hasHooks("subagent_ended")) {
-    return;
+  if (hookRunner?.hasHooks("subagent_ended")) {
+    await hookRunner.runSubagentEnded(
+      {
+        targetSessionKey: params.targetSessionKey,
+        targetKind,
+        reason: params.reason,
+        sendFarewell: true,
+        outcome: params.reason === "session-reset" ? "reset" : "deleted",
+      },
+      {
+        childSessionKey: params.targetSessionKey,
+      },
+    );
   }
-  await hookRunner.runSubagentEnded(
-    {
-      targetSessionKey: params.targetSessionKey,
-      targetKind,
-      reason: params.reason,
-      sendFarewell: true,
-      outcome: params.reason === "session-reset" ? "reset" : "deleted",
-    },
-    {
-      childSessionKey: params.targetSessionKey,
-    },
-  );
+
+  await emitSubagentEndedHookEvent({
+    targetSessionKey: params.targetSessionKey,
+    targetKind,
+    reason: params.reason,
+    sendFarewell: true,
+    outcome: params.reason === "session-reset" ? "reset" : "deleted",
+    ...(targetKind === "subagent" ? { childSessionKey: params.targetSessionKey } : {}),
+  });
 }
 
 async function ensureSessionRuntimeCleanup(params: {
