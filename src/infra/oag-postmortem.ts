@@ -484,7 +484,8 @@ export async function runPostRecoveryAnalysis(
     let rootCauseLabel: string | undefined;
     if (recentCrashes.length < minCrashes && channelIncidentCount >= minChannelIncidents) {
       try {
-        const { classifyRootCause } = await import("./oag-root-cause.js");
+        // Use hybrid classifier that combines regex patterns with Bayesian inference
+        const { classifyRootCauseHybrid } = await import("./oag-pyrca/index.js");
         // Classify root cause from the most recent incident's lastError within the analysis window
         // Filter incidents to the 48h window and sort by timestamp to get the most recent
         const recentIncident = memory.lifecycles
@@ -506,13 +507,19 @@ export async function runPostRecoveryAnalysis(
             const bTs = b.lastAt ? Date.parse(b.lastAt) : Date.parse(b.lifecycleStoppedAt);
             return bTs - aTs;
           })[0];
-        const rootCause = classifyRootCause(recentIncident?.lastError);
+        const rootCause = await classifyRootCauseHybrid(recentIncident?.lastError);
         rootCauseLabel = rootCause?.category;
         if (rootCauseLabel) {
           log.info(`Post-recovery root cause classification: ${rootCauseLabel}`);
+          // Log alternative candidates from Bayesian analysis
+          if (rootCause.alternatives && rootCause.alternatives.length > 0) {
+            log.debug(
+              `Root cause alternatives: ${rootCause.alternatives.map((a) => `${a.cause}(${a.probability})`).join(", ")}`,
+            );
+          }
         }
       } catch {
-        // oag-root-cause module not available yet — fall back to heuristic patterns
+        // oag-pyrca module not available — fall back to heuristic patterns
       }
     }
 
