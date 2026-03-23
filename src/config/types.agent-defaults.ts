@@ -282,6 +282,8 @@ export type AgentDefaultsConfig = {
     /** Gateway timeout in ms for sub-agent announce delivery calls (default: 60000). */
     announceTimeoutMs?: number;
   };
+  /** Tracked execution backend to use. Default: "subagent_session" (universal, no external dependencies). */
+  trackedExecutionBackend?: "subagent_session" | "opc_orchestrator";
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: AgentSandboxConfig;
 };

@@ -190,6 +190,9 @@ export const AgentDefaultsSchema = z
       .strict()
       .optional(),
     sandbox: AgentSandboxSchema,
+    trackedExecutionBackend: z
+      .union([z.literal("subagent_session"), z.literal("opc_orchestrator")])
+      .optional(),
   })
   .strict()
   .optional();
